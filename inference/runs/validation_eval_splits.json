@@ -1,0 +1,162 @@
+{
+ "RoboRef|droid": {
+  "progress": {
+   "n": 963,
+   "n_success": 734,
+   "auroc": 0.625007436669324,
+   "auroc_within_task": 0.6850024987095078,
+   "n_tasks_with_both": 57,
+   "separation": 0.030132195186828914,
+   "mean": 0.27971861299479367
+  },
+  "success_prob": {
+   "n": 963,
+   "n_success": 734,
+   "auroc": 0.7566662303820664,
+   "auroc_within_task": 0.7722478700871855,
+   "n_tasks_with_both": 57,
+   "separation": 0.20747835850066845,
+   "mean": 0.38263460755471995
+  }
+ },
+ "RoboRef|failsafe": {
+  "progress": {
+   "n": 555,
+   "n_success": 74,
+   "auroc": 0.8367983367983368,
+   "auroc_within_task": 0.8464975978824544,
+   "n_tasks_with_both": 3,
+   "separation": 0.1096801857179391,
+   "mean": 0.08934638437957645
+  },
+  "success_prob": {
+   "n": 555,
+   "n_success": 74,
+   "auroc": 0.8887733887733887,
+   "auroc_within_task": 0.9200771966267626,
+   "n_tasks_with_both": 3,
+   "separation": 0.39082834279462847,
+   "mean": 0.127171904761512
+  }
+ },
+ "RoboRef|metaworld": {
+  "progress": {
+   "n": 572,
+   "n_success": 104,
+   "auroc": 0.8669460880999342,
+   "auroc_within_task": 0.8695687114631085,
+   "n_tasks_with_both": 41,
+   "separation": 0.11210120962057105,
+   "mean": 0.12998772816328735
+  },
+  "success_prob": {
+   "n": 572,
+   "n_success": 104,
+   "auroc": 0.9606241781722551,
+   "auroc_within_task": 0.965838172667441,
+   "n_tasks_with_both": 41,
+   "separation": 0.6461764767638639,
+   "mean": 0.2081776198807296
+  }
+ },
+ "RoboRef|robometer": {
+  "progress": {
+   "n": 3865,
+   "n_success": 2478,
+   "auroc": 0.8154030886363808,
+   "auroc_within_task": 0.8372826364526282,
+   "n_tasks_with_both": 418,
+   "separation": 0.11174351255787038,
+   "mean": 0.2154488724481705
+  },
+  "success_prob": {
+   "n": 3865,
+   "n_success": 2478,
+   "auroc": 0.8720774539087445,
+   "auroc_within_task": 0.9412965352155602,
+   "n_tasks_with_both": 418,
+   "separation": 0.42372593389622315,
+   "mean": 0.4355684781290427
+  }
+ },
+ "Robometer-4B|droid": {
+  "progress": {
+   "n": 963,
+   "n_success": 734,
+   "auroc": 0.5800780552812251,
+   "auroc_within_task": 0.6854343689298195,
+   "n_tasks_with_both": 57,
+   "separation": 0.08881622512113668,
+   "mean": 0.41129131295726956
+  },
+  "success_prob": {
+   "n": 963,
+   "n_success": 734,
+   "auroc": 0.5951358233285342,
+   "auroc_within_task": 0.6686129712823471,
+   "n_tasks_with_both": 57,
+   "separation": 0.11268598973809935,
+   "mean": 0.22522069311092452
+  }
+ },
+ "Robometer-4B|failsafe": {
+  "progress": {
+   "n": 555,
+   "n_success": 74,
+   "auroc": 0.8931842445355959,
+   "auroc_within_task": 0.8980566128608346,
+   "n_tasks_with_both": 3,
+   "separation": 0.26612261640926405,
+   "mean": 0.6842011005760313
+  },
+  "success_prob": {
+   "n": 555,
+   "n_success": 74,
+   "auroc": 0.9005169410574816,
+   "auroc_within_task": 0.922609522818449,
+   "n_tasks_with_both": 3,
+   "separation": 0.5095005788822927,
+   "mean": 0.43987286541913007
+  }
+ },
+ "Robometer-4B|metaworld": {
+  "progress": {
+   "n": 572,
+   "n_success": 104,
+   "auroc": 0.6133095003287311,
+   "auroc_within_task": 0.6907528667394257,
+   "n_tasks_with_both": 41,
+   "separation": 0.09574440289408159,
+   "mean": 0.5301981899379329
+  },
+  "success_prob": {
+   "n": 572,
+   "n_success": 104,
+   "auroc": 0.6717825443786982,
+   "auroc_within_task": 0.732098216809857,
+   "n_tasks_with_both": 41,
+   "separation": 0.1727991348657853,
+   "mean": 0.2868245264866969
+  }
+ },
+ "Robometer-4B|robometer": {
+  "progress": {
+   "n": 3865,
+   "n_success": 2478,
+   "auroc": 0.7210570540584105,
+   "auroc_within_task": 0.8160949952785782,
+   "n_tasks_with_both": 418,
+   "separation": 0.2188449208712802,
+   "mean": 0.6208220213093827
+  },
+  "success_prob": {
+   "n": 3865,
+   "n_success": 2478,
+   "auroc": 0.748089023347782,
+   "auroc_within_task": 0.8326319852339664,
+   "n_tasks_with_both": 418,
+   "separation": 0.3570168386447809,
+   "mean": 0.4724844780807199
+  }
+ }
+}

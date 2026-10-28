@@ -1,0 +1,163 @@
+{
+ "episode max": {
+  "success_prob": {
+   "n": 600,
+   "n_success": 193,
+   "auroc": 0.44462833063869334,
+   "auroc_within_task": 0.44462833063869334,
+   "n_tasks_with_both": 1,
+   "separation": -0.019062568128508872,
+   "mean": 0.4926708984375
+  },
+  "progress": {
+   "n": 600,
+   "n_success": 193,
+   "auroc": 0.4214332089979758,
+   "auroc_within_task": 0.4214332089979758,
+   "n_tasks_with_both": 1,
+   "separation": -0.006308721552993779,
+   "mean": 0.8483373105525971
+  }
+ },
+ "last cut": {
+  "success_prob": {
+   "n": 600,
+   "n_success": 193,
+   "auroc": 0.48967549744751815,
+   "auroc_within_task": 0.48967549744751815,
+   "n_tasks_with_both": 1,
+   "separation": -0.005064585391278464,
+   "mean": 0.3239162190755208
+  },
+  "progress": {
+   "n": 600,
+   "n_success": 193,
+   "auroc": 0.41105778411477895,
+   "auroc_within_task": 0.41105778411477895,
+   "n_tasks_with_both": 1,
+   "separation": -0.00955257114861019,
+   "mean": 0.7655868788560232
+  }
+ },
+ "canary: episode-max success_prob on true successes (median; expect ~0.7-0.9)": 0.4765625,
+ "episode max, bc_informed": {
+  "success_prob": {
+   "n": 100,
+   "n_success": 55,
+   "auroc": 0.6258585858585859,
+   "auroc_within_task": 0.6258585858585859,
+   "n_tasks_with_both": 1,
+   "separation": 0.04803898358585856,
+   "mean": 0.45458984375
+  },
+  "progress": {
+   "n": 100,
+   "n_success": 55,
+   "auroc": 0.6496969696969697,
+   "auroc_within_task": 0.6496969696969697,
+   "n_tasks_with_both": 1,
+   "separation": 0.020310489577476387,
+   "mean": 0.8352109503746032
+  }
+ },
+ "episode max, bc_vision": {
+  "success_prob": {
+   "n": 100,
+   "n_success": 23,
+   "auroc": 0.6086956521739131,
+   "auroc_within_task": 0.6086956521739131,
+   "n_tasks_with_both": 1,
+   "separation": 0.05203793319452288,
+   "mean": 0.469951171875
+  },
+  "progress": {
+   "n": 100,
+   "n_success": 23,
+   "auroc": 0.611518915866742,
+   "auroc_within_task": 0.611518915866742,
+   "n_tasks_with_both": 1,
+   "separation": 0.022195688450423967,
+   "mean": 0.8361092501878739
+  }
+ },
+ "episode max, late_tap": {
+  "success_prob": {
+   "n": 100,
+   "n_success": 5,
+   "auroc": 0.05473684210526316,
+   "auroc_within_task": 0.05473684210526316,
+   "n_tasks_with_both": 1,
+   "separation": -0.13770559210526312,
+   "mean": 0.4980078125
+  },
+  "progress": {
+   "n": 100,
+   "n_success": 5,
+   "auroc": 0.14947368421052631,
+   "auroc_within_task": 0.14947368421052631,
+   "n_tasks_with_both": 1,
+   "separation": -0.028075671823401205,
+   "mean": 0.8540040391683579
+  }
+ },
+ "episode max, planner_fitted": {
+  "success_prob": {
+   "n": 100,
+   "n_success": 65,
+   "auroc": 0.4169230769230769,
+   "auroc_within_task": 0.4169230769230769,
+   "n_tasks_with_both": 1,
+   "separation": -0.02834821428571427,
+   "mean": 0.501328125
+  },
+  "progress": {
+   "n": 100,
+   "n_success": 65,
+   "auroc": 0.3626373626373626,
+   "auroc_within_task": 0.3626373626373626,
+   "n_tasks_with_both": 1,
+   "separation": -0.012515390574277085,
+   "mean": 0.848686763048172
+  }
+ },
+ "episode max, planner_prior_dyn": {
+  "success_prob": {
+   "n": 100,
+   "n_success": 24,
+   "auroc": 0.32209429824561403,
+   "auroc_within_task": 0.32209429824561403,
+   "n_tasks_with_both": 1,
+   "separation": -0.06872344435307015,
+   "mean": 0.51552734375
+  },
+  "progress": {
+   "n": 100,
+   "n_success": 24,
+   "auroc": 0.31414473684210525,
+   "auroc_within_task": 0.31414473684210525,
+   "n_tasks_with_both": 1,
+   "separation": -0.023618183899344114,
+   "mean": 0.856588642001152
+  }
+ },
+ "episode max, planner_zero_probe": {
+  "success_prob": {
+   "n": 100,
+   "n_success": 21,
+   "auroc": 0.31705846895720313,
+   "auroc_within_task": 0.31705846895720313,
+   "n_tasks_with_both": 1,
+   "separation": -0.06495229618746234,
+   "mean": 0.51662109375
+  },
+  "progress": {
+   "n": 100,
+   "n_success": 21,
+   "auroc": 0.30319469559975887,
+   "auroc_within_task": 0.30319469559975887,
+   "n_tasks_with_both": 1,
+   "separation": -0.021189101817307487,
+   "mean": 0.8594242185354233
+  }
+ }
+}

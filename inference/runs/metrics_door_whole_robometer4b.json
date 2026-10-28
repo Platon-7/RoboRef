@@ -1,0 +1,144 @@
+{
+ "full": {
+  "all": {
+   "success_prob": {
+    "n": 600,
+    "n_success": 193,
+    "auroc": 0.48967549744751815,
+    "auroc_within_task": 0.48967549744751815,
+    "n_tasks_with_both": 1,
+    "separation": -0.005064585391278464,
+    "mean": 0.3239162190755208
+   },
+   "progress": {
+    "n": 600,
+    "n_success": 193,
+    "auroc": 0.41105778411477895,
+    "auroc_within_task": 0.41105778411477895,
+    "n_tasks_with_both": 1,
+    "separation": -0.00955257114861019,
+    "mean": 0.7655868788560232
+   }
+  },
+  "bc_informed": {
+   "success_prob": {
+    "n": 100,
+    "n_success": 55,
+    "auroc": 0.6159595959595959,
+    "auroc_within_task": 0.6159595959595959,
+    "n_tasks_with_both": 1,
+    "separation": 0.043497967960858586,
+    "mean": 0.28995849609375
+   },
+   "progress": {
+    "n": 100,
+    "n_success": 55,
+    "auroc": 0.5563636363636364,
+    "auroc_within_task": 0.5563636363636364,
+    "n_tasks_with_both": 1,
+    "separation": 0.048009801151776554,
+    "mean": 0.7320858430862427
+   }
+  },
+  "bc_vision": {
+   "success_prob": {
+    "n": 100,
+    "n_success": 23,
+    "auroc": 0.5813099943534726,
+    "auroc_within_task": 0.5813099943534726,
+    "n_tasks_with_both": 1,
+    "separation": 0.03301329911596551,
+    "mean": 0.31866943359375
+   },
+   "progress": {
+    "n": 100,
+    "n_success": 23,
+    "auroc": 0.538678712591756,
+    "auroc_within_task": 0.538678712591756,
+    "n_tasks_with_both": 1,
+    "separation": 0.030982368363289492,
+    "mean": 0.7547479179501534
+   }
+  },
+  "late_tap": {
+   "success_prob": {
+    "n": 100,
+    "n_success": 5,
+    "auroc": 0.05894736842105263,
+    "auroc_within_task": 0.05894736842105263,
+    "n_tasks_with_both": 1,
+    "separation": -0.1898206208881579,
+    "mean": 0.26043212890625
+   },
+   "progress": {
+    "n": 100,
+    "n_success": 5,
+    "auroc": 0.06736842105263158,
+    "auroc_within_task": 0.06736842105263158,
+    "n_tasks_with_both": 1,
+    "separation": -0.2086925707365337,
+    "mean": 0.7593051385879517
+   }
+  },
+  "planner_fitted": {
+   "success_prob": {
+    "n": 100,
+    "n_success": 65,
+    "auroc": 0.3841758241758242,
+    "auroc_within_task": 0.3841758241758242,
+    "n_tasks_with_both": 1,
+    "separation": -0.042082063444368156,
+    "mean": 0.347650146484375
+   },
+   "progress": {
+    "n": 100,
+    "n_success": 65,
+    "auroc": 0.33582417582417584,
+    "auroc_within_task": 0.33582417582417584,
+    "n_tasks_with_both": 1,
+    "separation": -0.01645646259024902,
+    "mean": 0.7704254618287086
+   }
+  },
+  "planner_prior_dyn": {
+   "success_prob": {
+    "n": 100,
+    "n_success": 24,
+    "auroc": 0.2902960526315789,
+    "auroc_within_task": 0.2902960526315789,
+    "n_tasks_with_both": 1,
+    "separation": -0.060546875,
+    "mean": 0.354609375
+   },
+   "progress": {
+    "n": 100,
+    "n_success": 24,
+    "auroc": 0.25164473684210525,
+    "auroc_within_task": 0.25164473684210525,
+    "n_tasks_with_both": 1,
+    "separation": -0.03381318729697613,
+    "mean": 0.7833502876758576
+   }
+  },
+  "planner_zero_probe": {
+   "success_prob": {
+    "n": 100,
+    "n_success": 21,
+    "auroc": 0.42706449668474983,
+    "auroc_within_task": 0.42706449668474983,
+    "n_tasks_with_both": 1,
+    "separation": -0.020974019552441214,
+    "mean": 0.372177734375
+   },
+   "progress": {
+    "n": 100,
+    "n_success": 21,
+    "auroc": 0.39300783604581074,
+    "auroc_within_task": 0.39300783604581074,
+    "n_tasks_with_both": 1,
+    "separation": -0.012724703338363175,
+    "mean": 0.793606624007225
+   }
+  }
+ }
+}
