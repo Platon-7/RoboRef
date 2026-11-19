@@ -1045,7 +1045,13 @@ class RBMBaseSampler:
         # each to a rubric decimal ({1→0, 2→0.25, 3→0.5, 4→0.75}) and optionally smooth via
         # piecewise-linear interpolation so the shape matches the smooth `t/T` success signal.
         raw_frame_labels = traj.get("frame_labels")
-        if raw_frame_labels is not None:
+        # Successful trajectories keep their smooth t/T progress even when the loader attaches
+        # frame_labels — the metaworld "bare-family" caches attach them to successes too.
+        # Keying this branch on the mere presence of frame_labels made the success path below
+        # unreachable, capped success progress at the rubric maximum 0.75 and, against
+        # metaworld's 1.0 success cutoff, yielded ZERO positive success frames for whole runs
+        # (train/success_num_positives == 0 at every step; the success head never trained).
+        if raw_frame_labels is not None and traj.get("quality_label") != "successful":
             if not isinstance(raw_frame_labels, (list, tuple)):
                 raise TypeError(
                     f"frame_labels must be a list, got {type(raw_frame_labels).__name__} "

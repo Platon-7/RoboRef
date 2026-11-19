@@ -83,7 +83,7 @@ iamlab_cmu,0.95
 jaco_play,0.95
 kaist_nonprehensile,1.0
 libero,0.95
-metaworld,1.0
+metaworld,0.9
 mit_franka,0.95
 molmoact,0.94
 motif,0.95
