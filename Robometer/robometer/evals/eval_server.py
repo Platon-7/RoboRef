@@ -62,6 +62,59 @@ logger = get_logger()
 logger.info(f"robometer.eval_server logger initialized at level {LOG_LEVEL}")
 
 
+_TRAJECTORY_KEYS = (
+    "trajectory",
+    "chosen_trajectory",
+    "rejected_trajectory",
+    "reference_trajectory",
+    "traj_sim_trajectory",
+    "traj_diff_trajectory",
+)
+
+
+def _dump_batch_frames(dump_dir: str, job_id: int, batch_data: List[Dict[str, Any]]) -> None:
+    """Save the raw frame arrays a batch is about to be scored on, for offline inspection.
+
+    Writes <dump_dir>/job_<job_id>_sample_<i>_<traj_key>/frames.npy (the array exactly as
+    received) plus one PNG per frame when it looks like image data (ndim 4, channels-last).
+    Best-effort only: never let a debug dump take down real inference.
+    """
+    try:
+        from PIL import Image
+
+        os.makedirs(dump_dir, exist_ok=True)
+        for sample_idx, sample in enumerate(batch_data):
+            if not isinstance(sample, dict):
+                continue
+            for traj_key in _TRAJECTORY_KEYS:
+                traj = sample.get(traj_key)
+                if not isinstance(traj, dict):
+                    continue
+                frames = traj.get("frames")
+                if frames is None:
+                    continue
+                frames = np.asarray(frames)
+                out_dir = os.path.join(dump_dir, f"job_{job_id}_sample_{sample_idx}_{traj_key}")
+                os.makedirs(out_dir, exist_ok=True)
+                np.save(os.path.join(out_dir, "frames.npy"), frames)
+                if frames.ndim == 4 and frames.shape[-1] in (1, 3, 4):
+                    for i, frame in enumerate(frames):
+                        arr = frame.astype(np.uint8) if frame.dtype != np.uint8 else frame
+                        Image.fromarray(arr.squeeze(-1) if arr.shape[-1] == 1 else arr).save(
+                            os.path.join(out_dir, f"frame_{i:02d}.png")
+                        )
+                motion = None
+                if frames.ndim == 4 and frames.shape[0] > 1:
+                    diffs = np.abs(frames[1:].astype(np.float32) - frames[:-1].astype(np.float32))
+                    motion = float(diffs.mean())
+                logger.info(
+                    f"[job {job_id}] dumped {traj_key} frames shape={frames.shape} dtype={frames.dtype} "
+                    f"motion={motion} to {out_dir}"
+                )
+    except Exception as e:
+        logger.warning(f"[job {job_id}] ROBOMETER_DEBUG_DUMP_FRAMES failed (non-fatal): {e}")
+
+
 def log_logits(name: str, value: Any) -> None:
     if isinstance(value, torch.Tensor):
         logger.debug(f"{name} shape={tuple(value.shape)} values={value.detach().cpu().tolist()}")
@@ -521,6 +574,14 @@ class MultiGPUEvalServer:
                 actual_batch_data = [v for k, v in batch_data.items() if k != "use_frame_steps"]
                 if len(actual_batch_data) == 1 and isinstance(actual_batch_data[0], list):
                     actual_batch_data = actual_batch_data[0]
+
+            # Opt-in debug dump: set ROBOMETER_DEBUG_DUMP_FRAMES=/some/dir to save the
+            # exact frames each request sends to the model (pre-inference, post-transport),
+            # so "which frames did the model actually get for job N" is answerable after
+            # the fact instead of only inferrable from the reward log.
+            dump_dir = os.environ.get("ROBOMETER_DEBUG_DUMP_FRAMES")
+            if dump_dir:
+                _dump_batch_frames(dump_dir, job_id, actual_batch_data)
 
             # Process batch in thread pool
             result = await loop.run_in_executor(
