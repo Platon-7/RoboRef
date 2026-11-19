@@ -16,6 +16,12 @@ from robometer.utils.distributed import get_rank, is_rank_0
 # TRACE (5) already exists in loguru by default
 DEBUG2_LEVEL = 8  # Intermediate debug level between TRACE (5) and DEBUG (10)
 
+# How many wandb logging failures to warn about before going quiet, and how many
+# CONSECUTIVE failures before we stop trying for the rest of the run. See
+# _safe_wandb_log() for why this exists.
+_WANDB_WARN_LIMIT = 3
+_WANDB_DISABLE_AFTER = 20
+
 
 def _add_custom_log_levels():
     """Add custom log levels to loguru for more granular debugging control."""
@@ -102,6 +108,7 @@ class Logger:
         setup_loguru_logging(log_level=log_level, output_dir=output_dir if is_main_process else None)
 
         self._wandb_run = wandb.run if (self._use_wandb and self._is_main) else None
+        self._wandb_fail_count = 0
 
         self._tb_writer = None
         if self._use_tb and self._is_main:
@@ -134,7 +141,35 @@ class Logger:
         if resume_id:
             init_kwargs["id"] = resume_id
             init_kwargs["resume"] = "must"
-        self._wandb_run = wandb.init(**init_kwargs)
+        # wandb.init() talks to the server BEFORE a single training step runs, so a
+        # dead credential or a wandb outage here kills the job in ~80 seconds and
+        # wastes the queue slot -- that is exactly how arm 292804_3 died on
+        # 2026-11-19 (CommError 401 straight out of init). Logging setup must never
+        # be able to do that: degrade to offline, then to no logging at all, but
+        # always return control to the training loop.
+        try:
+            self._wandb_run = wandb.init(**init_kwargs)
+        except Exception as e:  # noqa: BLE001 -- deliberately broad; see comment
+            loguru_logger.error(
+                f"wandb.init failed ({type(e).__name__}: {e}) -- falling back to "
+                f"OFFLINE mode. Training proceeds; run `wandb sync` on the run "
+                f"directory afterwards to upload it."
+            )
+            fallback = dict(init_kwargs)
+            fallback["mode"] = "offline"
+            # a resume handshake cannot be honoured offline; take a fresh run id
+            # rather than failing a second time.
+            fallback.pop("id", None)
+            fallback.pop("resume", None)
+            try:
+                self._wandb_run = wandb.init(**fallback)
+            except Exception as e2:  # noqa: BLE001
+                loguru_logger.error(
+                    f"offline wandb.init ALSO failed ({type(e2).__name__}: {e2}) -- "
+                    f"disabling wandb for this run. Training proceeds to completion."
+                )
+                self._use_wandb = False
+                self._wandb_run = None
         return self._wandb_run
 
     def enabled(self, backend: str) -> bool:
@@ -145,11 +180,56 @@ class Logger:
             return self._use_tb and self._is_main and self._tb_writer is not None
         return False
 
+    def _safe_wandb_log(self, payload: Dict[str, Any], step: Optional[int] = None, what: str = "data") -> bool:
+        """
+        Log to wandb WITHOUT letting a logging failure reach the training loop.
+
+        Why this is not optional: scalar payloads are handed to wandb's background
+        service, which buffers, retries and falls back to disk -- a dead network
+        there produces a warning. Media payloads (Table/Image/Video/Html) are NOT
+        like that: constructing them registers an artifact through the public
+        GraphQL API *synchronously, in this process*. Any failure raises straight
+        up through evaluate() -> _maybe_log_save_evaluate() and kills training,
+        and because it unwinds before the save, that step's checkpoint is lost too.
+
+        That is exactly how job 292804 died on 2026-11-19: the W&B API key expired
+        at 09:10:38, scalars degraded to a warning and training ran on happily for
+        another 3h11m, then the step-4000 policy_ranking table raised 401 and took
+        all four lambda arms down with it. 30 GPU-hours for a logging call.
+
+        A metric that fails to upload is an inconvenience. A training run that dies
+        at hour 30 is not. Never trade the second for the first.
+        """
+        if not self.enabled("wandb"):
+            return False
+        try:
+            self._wandb_run.log(payload, step=step)
+            self._wandb_fail_count = 0
+            return True
+        except Exception as e:  # noqa: BLE001 -- deliberately broad; see docstring
+            self._wandb_fail_count += 1
+            n = self._wandb_fail_count
+            if n <= _WANDB_WARN_LIMIT:
+                loguru_logger.warning(
+                    f"wandb log failed ({what}, step={step}): {type(e).__name__}: {e} "
+                    f"-- training continues, metric dropped"
+                )
+                if n == _WANDB_WARN_LIMIT:
+                    loguru_logger.warning("further wandb logging failures will be silenced")
+            if n >= _WANDB_DISABLE_AFTER:
+                loguru_logger.error(
+                    f"wandb logging DISABLED after {n} consecutive failures; training "
+                    f"continues to completion. Run `wandb sync` on the run directory "
+                    f"afterwards to recover whatever was written to disk."
+                )
+                self._use_wandb = False
+            return False
+
     def log_scalars(self, scalars: Dict[str, float], step: Optional[int] = None):
         if not self._is_main:
             return
         if self.enabled("wandb"):
-            self._wandb_run.log(scalars, step=step)
+            self._safe_wandb_log(scalars, step=step)
         if self.enabled("tensorboard"):
             for k, v in scalars.items():
                 if isinstance(v, (int, float)):
@@ -159,7 +239,7 @@ class Logger:
         if not self._is_main:
             return
         if self.enabled("wandb"):
-            self._wandb_run.log({tag: wandb.Image(figure)}, step=step)
+            self._safe_wandb_log({tag: wandb.Image(figure)}, step=step)
         if self.enabled("tensorboard"):
             self._tb_writer.add_figure(tag, figure, global_step=step)
 
@@ -175,7 +255,7 @@ class Logger:
             if image.ndim == 3 and image.shape[2] == 3:
                 if image.dtype != np.uint8:
                     image = np.clip(image, 0, 255).astype(np.uint8)
-                self._wandb_run.log({tag: wandb.Image(image)}, step=step)
+                self._safe_wandb_log({tag: wandb.Image(image)}, step=step)
         if self.enabled("tensorboard"):
             # Convert to (C, H, W) for tensorboard
             if image.ndim == 3 and image.shape[2] == 3:
@@ -237,7 +317,7 @@ class Logger:
             #     tag_with_step = f"{tag}/step_{step}"
             # else:
             #     tag_with_step = tag
-            self._wandb_run.log({tag: wandb.Table(data=rows, columns=columns)}, step=step)
+            self._safe_wandb_log({tag: wandb.Table(data=rows, columns=columns)}, step=step)
 
     def add_text(self, tag: str, text: str, step: Optional[int] = None):
         if not self._is_main:
@@ -247,7 +327,7 @@ class Logger:
         # For wandb, text can be added via log_scalars or a media panel; skip for simplicity
         if self.enabled("wandb"):
             # Store as a simple text panel by wrapping in a dict
-            self._wandb_run.log({tag: wandb.Html(f"<pre>{text}</pre>")}, step=step)
+            self._safe_wandb_log({tag: wandb.Html(f"<pre>{text}</pre>")}, step=step)
 
     def log_table(self, tag: str, data: List[List[Any]], columns: List[str], step: Optional[int] = None):
         """
@@ -260,7 +340,7 @@ class Logger:
             #     tag_with_step = f"{tag}/step_{step}"
             # else:
             #     tag_with_step = tag
-            self._wandb_run.log({tag: wandb.Table(data=data, columns=columns)}, step=step)
+            self._safe_wandb_log({tag: wandb.Table(data=data, columns=columns)}, step=step)
 
     def log_video(self, tag: str, video: Any, fps: int = 10, step: Optional[int] = None):
         """
@@ -273,7 +353,7 @@ class Logger:
         # wandb
         if self.enabled("wandb"):
             if isinstance(video, str):
-                self._wandb_run.log({tag: wandb.Video(video, fps=fps)}, step=step)
+                self._safe_wandb_log({tag: wandb.Video(video, fps=fps)}, step=step)
             else:
                 arr = None
                 if isinstance(video, np.ndarray):
@@ -285,7 +365,7 @@ class Logger:
                     # If last dimension is 3 (or 1), it's THWC format, convert to TCHW
                     if arr.shape[-1] in (1, 3) and arr.shape[1] not in (1, 3):
                         arr = np.transpose(arr, (0, 3, 1, 2))  # T x H x W x C -> T x C x H x W
-                    self._wandb_run.log({tag: wandb.Video(arr, fps=fps, format="mp4")}, step=step)
+                    self._safe_wandb_log({tag: wandb.Video(arr, fps=fps, format="mp4")}, step=step)
         # tensorboard
         if self.enabled("tensorboard"):
             tens = None
