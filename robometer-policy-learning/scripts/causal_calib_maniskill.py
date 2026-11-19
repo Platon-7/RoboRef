@@ -77,6 +77,8 @@ def rollout_and_score(args) -> int:
         extract_success_probs_from_output, extract_rewards_from_output)
 
     spec = get_task_spec(args.task)
+    if args.frames_dir is None:
+        args.frames_dir = os.path.join(args.out_dir, "frames")
 
     # ---- reward model -------------------------------------------------------
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -118,6 +120,7 @@ def rollout_and_score(args) -> int:
     # a dinov2_model is passed. Omitting it hands the actor raw 384-d proprio and it
     # dies with "mat1 and mat2 shapes cannot be multiplied (1x384 and 768x512)".
     from transformers import AutoImageProcessor, AutoModel
+    import imageio.v2 as imageio
     _dino_name = "facebook/dinov2-base"   # configs/maniskill_online_rl.yaml
     dino_model = AutoModel.from_pretrained(_dino_name).to(dev).eval()
     dino_processor = AutoImageProcessor.from_pretrained(_dino_name)
@@ -150,7 +153,7 @@ def rollout_and_score(args) -> int:
             actor.eval()
         for e in range(eps_per_ckpt):
             obs, _ = env.reset(seed=7000 + 100 * len(episodes) + e)
-            video, sps, prs, gt, gt_step = [], [], [], 0, -1
+            video, sps, prs, gt_rewards, gt, gt_step = [], [], [], [], 0, -1
             for t in range(1, spec.max_episode_steps + 1):
                 video.append(np.asarray(obs["image"]).reshape(args.image_size, args.image_size, 3)
                              .astype(np.uint8))
@@ -162,9 +165,13 @@ def rollout_and_score(args) -> int:
                         ot = move_to_device(convert_to_tensor(obs), dev)
                         a, _ = actor.act(ot, actor_state=None, deterministic=True)
                     a = a.detach().cpu().numpy()
-                obs, _r, term, trunc, infos = env.step(a)
+                obs, r, term, trunc, infos = env.step(a)
                 sp, pr = score(video)
                 sps.append(sp); prs.append(pr)
+                # env is built with reward_mode="normalized_dense", so this is the GT dense
+                # reward; it separates near-misses (high GT progress) from exploits (high
+                # model score, low GT progress) in a failed episode.
+                gt_rewards.append(float(np.asarray(r).reshape(-1)[0]))
                 info_i = extract_info_for_env(infos, 0, 1)
                 if bool(info_i.get("success", False)) and gt_step < 0:
                     gt_step = t
@@ -173,10 +180,27 @@ def rollout_and_score(args) -> int:
                     break
             sps = np.array(sps)
             episodes.append(dict(gt=gt, gt_step=gt_step, sps=sps.tolist(),
-                                 progress=prs, ckpt=step))
+                                 progress=prs, gt_rewards=gt_rewards, ckpt=step))
             print(f"  ep{len(episodes)-1:03d} ckpt={step:<7} GT={'S' if gt else 'F'} "
                   f"gt_step={gt_step} len={len(sps)} max_sp={sps.max():.3f}@{int(sps.argmax())+1}",
                   flush=True)
+
+            # Save frames for never-solved episodes whose peak PROGRESS clears
+            # --save-threshold, plus a capped number of successes for contrast. Progress,
+            # not success_prob: it is the reward SAC maximizes and the scale Table 3's
+            # tau lives on (score_per_step in episodes.jsonl is the raw progress head).
+            if args.save_frames:
+                is_interesting_failure = (not gt) and (
+                    args.save_threshold is None or max(prs) >= args.save_threshold)
+                is_capped_success = gt and (len([d for d in episodes if d["gt"]]) <= args.save_successes)
+                if is_interesting_failure or is_capped_success:
+                    os.makedirs(args.frames_dir, exist_ok=True)
+                    fpath = os.path.join(
+                        args.frames_dir,
+                        f"{args.task}__{args.tag}_ckpt{step}_ep{len(episodes)-1:03d}_"
+                        f"{'S' if gt else 'F'}_prog{max(prs):.3f}_sp{sps.max():.3f}.mp4")
+                    imageio.mimsave(fpath, video, fps=10)
+                    print(f"  -> saved {fpath}", flush=True)
 
     env.close()
     if eval_env is not None and eval_env is not env:
@@ -254,4 +278,15 @@ if __name__ == "__main__":
     ap.add_argument("--image-size", type=int, default=224)  # robosuite_wrapper.py uses 224
     ap.add_argument("--out-dir", default=os.path.join(
         os.environ.get("MS_ASSET_DIR", "/tmp"), "causal_calib"))
+    ap.add_argument("--save-frames", action="store_true",
+                    help="write mp4s of never-solved episodes that clear --save-threshold, "
+                         "plus up to --save-successes true successes, to --frames-dir")
+    ap.add_argument("--save-threshold", type=float, default=None,
+                    help="peak progress a never-solved episode must reach to be saved "
+                         "(Table 3's tau scale, e.g. 0.161 for RoboRef); unset saves every "
+                         "never-solved episode")
+    ap.add_argument("--save-successes", type=int, default=4,
+                    help="cap on saved GT-success episodes, for visual contrast")
+    ap.add_argument("--frames-dir", default=None,
+                    help="defaults to <out-dir>/frames")
     sys.exit(rollout_and_score(ap.parse_args()))

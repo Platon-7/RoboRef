@@ -44,6 +44,11 @@ progress_beta: 1.0
 # beta=0.0 + this set IS the MetaWorld/Robomimic/LIBERO recipe.
 progress_binarize_threshold: null
 
+# ORACLE diagnostic (C3), reads GT: where the task is not solved at this step but
+# the raw progress reward is >= this value, clip it just below. Set it to the
+# model's Table 3 step threshold (Robometer-4B 0.6538). null = off.
+fp_mask_tau: null
+
 # Whether to add estimated reward to the ground truth reward
 add_estimated_reward: false
 

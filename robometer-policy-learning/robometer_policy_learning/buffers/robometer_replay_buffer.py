@@ -59,6 +59,7 @@ class RobometerReplayBuffer(ReplayBuffer):
         icl_demo_seed: int = 0,
         progress_beta: float = 1.0,
         progress_binarize_threshold: Optional[float] = None,
+        fp_mask_tau: Optional[float] = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -94,6 +95,10 @@ class RobometerReplayBuffer(ReplayBuffer):
         # normalize_reward/progress_as_potential, same as the reference implementation.
         self.progress_beta = float(progress_beta)
         self.progress_binarize_threshold = progress_binarize_threshold
+        # Oracle false-positive mask (see _add). A diagnostic, not a method: it reads GT.
+        self.fp_mask_tau = None if fp_mask_tau is None else float(fp_mask_tau)
+        self._fp_seen = 0
+        self._fp_masked = 0
 
         # ---- on-policy episode instrumentation (RPL_EPISODE_LOG) -------------
         # Per-episode JSONL for the reward-hacking analysis. Deliberately NOT
@@ -708,6 +713,21 @@ class RobometerReplayBuffer(ReplayBuffer):
                         f"rm_reward_sum={self._disc_acc[eid]:.4f} len={self._disc_len[eid]}"
                     )
                     self._disc_acc.pop(eid, None); self._disc_succ.pop(eid, None); self._disc_len.pop(eid, None)
+
+            # ORACLE FP MASK (fp_mask_tau). Where GT says the task is not solved at this
+            # step but the model pays success-level reward (>= tau, the model's Table 3
+            # threshold), clip just below tau. Removes exactly the errors Table 3 counts;
+            # the model's ordering of non-success states is kept, only flattened at the
+            # top. Applied on the raw scale, before normalize/potential shaping.
+            if self.fp_mask_tau is not None:
+                self._fp_seen += 1
+                gt_now = bool(kwargs.get("is_success") or kwargs.get("success"))
+                if not gt_now and avg_reward >= self.fp_mask_tau:
+                    avg_reward = self.fp_mask_tau - 1e-3
+                    self._fp_masked += 1
+                if self._fp_seen <= 5 or self._fp_seen % 5000 == 0:
+                    logger.info(f"[FPMASK] tau={self.fp_mask_tau} masked "
+                                f"{self._fp_masked}/{self._fp_seen} steps so far")
 
             _gt_in = kwargs.get("reward")
 

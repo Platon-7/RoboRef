@@ -312,6 +312,7 @@ def main(cfg: DictConfig):
             icl_demo_path=OmegaConf.select(cfg, "reward_model.icl_demo_path", default=None),
             progress_beta=OmegaConf.select(cfg, "reward_model.progress_beta", default=1.0),
             progress_binarize_threshold=OmegaConf.select(cfg, "reward_model.progress_binarize_threshold", default=None),
+            fp_mask_tau=OmegaConf.select(cfg, "reward_model.fp_mask_tau", default=None),
         )
 
         if use_async_reward_relabel and reward_model is not None:

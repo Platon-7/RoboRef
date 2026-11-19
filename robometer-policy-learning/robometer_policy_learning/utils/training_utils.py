@@ -348,6 +348,7 @@ def create_buffer(
     icl_demo_path: Optional[str] = None,
     progress_beta: float = 1.0,
     progress_binarize_threshold: Optional[float] = None,
+    fp_mask_tau: Optional[float] = None,
 ) -> Any:
     """
     Create a replay buffer for training.
@@ -495,6 +496,7 @@ def create_buffer(
                     icl_demo_path=icl_demo_path,
                     progress_beta=progress_beta,
                     progress_binarize_threshold=progress_binarize_threshold,
+                    fp_mask_tau=fp_mask_tau,
                 )
             else:
                 return ReplayBuffer(
