@@ -60,6 +60,7 @@ dependencies = [
     "seaborn",
     "bitsandbytes",
     "torch==2.8.0",  # Required for Qwen models, xformers, and modern transformers. Use CUDA build on Linux via tool.uv.sources
+    "flash-attn",  # build config already present below (extra-build-dependencies/variables); was never actually listed here
     "torchvision",
     "moviepy",
     "wandb[media]",
@@ -146,6 +147,9 @@ conflicts = [
 # This section could be used for advanced features like overriding dependencies
 # from your environment if needed, similar to the 'openpi' example.
 #override-dependencies = ["av<16.0.0"]
+# torchao 0.14+ imports torch.nn.functional.ScalingType, added after torch==2.8.0
+# (the version pinned above); pin torchao to the last release built against it.
+override-dependencies = ["torchao==0.13.0"]
 
 # Ensure flash-attn builds against the same Torch that's in your env
 [tool.uv.extra-build-dependencies]
