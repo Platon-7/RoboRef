@@ -13,7 +13,12 @@ try:
     from unsloth import FastVisionModel
 
     HAS_UNSLOTH = True
-except ImportError:
+except (ImportError, OSError):
+    # unsloth's import chain eagerly patches HF `datasets` torchcodec audio
+    # decoding, which dlopen()s a native extension. In envs where that
+    # extension's CUDA version doesn't match what's installed (e.g. it wants
+    # libnvrtc.so.13 but only cu12 nvrtc is present), that surfaces as an
+    # OSError here rather than an ImportError -- treat it the same way.
     HAS_UNSLOTH = False
     FastVisionModel = None
 
@@ -89,7 +94,8 @@ def _load_custom_heads_from_safetensors(model: "RBM", checkpoint_path: str) -> b
 
 
 def _load_checkpoint_weights_from_safetensors(
-    model, checkpoint_path: str, cfg: ModelConfig, load_adapters: bool = True
+    model, checkpoint_path: str, cfg: ModelConfig, load_adapters: bool = True,
+    expect_head_change: bool = True,
 ) -> None:
     """
     Load checkpoint weights from safetensors files in a checkpoint directory.
@@ -103,6 +109,10 @@ def _load_checkpoint_weights_from_safetensors(
         checkpoint_path: Path to checkpoint directory containing safetensors files
         cfg: Model configuration for verification
         load_adapters: If False, skip loading adapter weights (assumes already loaded via PeftModel.from_pretrained)
+        expect_head_change: If False, do not treat an unchanged progress_head as a failure. Set
+            this when the heads were already loaded by an earlier pass over the same checkpoint
+            (see _restore_unmerged_peft_checkpoint): reloading identical values is a no-op, so
+            the before/after comparison cannot say anything about correctness.
     """
 
     checkpoint_path = Path(checkpoint_path)
@@ -315,11 +325,18 @@ def _load_checkpoint_weights_from_safetensors(
     )
 
     if not progress_head_loaded:
-        logger.error("Progress head weights did not change after loading checkpoint!")
-        logger.error("This indicates the checkpoint weights were not loaded correctly.")
-        import ipdb
-
-        ipdb.set_trace()  # Breakpoint if progress_head didn't load
+        if expect_head_change:
+            logger.error("Progress head weights did not change after loading checkpoint!")
+            logger.error("This indicates the checkpoint weights were not loaded correctly.")
+            # NOTE: ipdb.set_trace() previously here — removed because it crashed batch jobs,
+            # which have no tty: ipdb reads EOF from /dev/null and raises bdb.BdbQuit. Same
+            # reasoning as the removal in trainers/rbm_heads_trainer.py. The errors above are
+            # enough, and callers that can verify the load themselves pass expect_head_change=False.
+        else:
+            logger.info(
+                "Progress head unchanged, as expected: the heads were already loaded by an "
+                "earlier pass over this checkpoint, so this comparison is not a failure signal."
+            )
 
     # Verify adapter weights loaded correctly (if PEFT is enabled)
     adapter_loaded_correctly = True
@@ -382,9 +399,8 @@ def _load_checkpoint_weights_from_safetensors(
 
     if not adapter_loaded_correctly:
         logger.error("Adapter weights did not load correctly!")
-        import ipdb
-
-        ipdb.set_trace()  # Breakpoint if adapters didn't load correctly
+        # NOTE: ipdb.set_trace() previously here — removed for the same reason as above: in a
+        # batch job it turns a recoverable warning into bdb.BdbQuit.
 
     logger.info(f"Successfully loaded checkpoint weights from {checkpoint_path}")
 

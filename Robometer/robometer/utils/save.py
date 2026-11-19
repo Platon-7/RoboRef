@@ -857,6 +857,88 @@ class SaveBestCallback(TrainerCallback):
         self._cleanup_memory()
 
 
+def _checkpoint_lora_keys(checkpoint_dir: Path) -> list:
+    """Return the lora_A/lora_B tensor names stored in a checkpoint directory."""
+    index = checkpoint_dir / "model.safetensors.index.json"
+    if index.is_file():
+        with open(index) as f:
+            names = list(json.load(f).get("weight_map", {}).keys())
+    else:
+        from safetensors import safe_open
+
+        names = []
+        for shard in sorted(checkpoint_dir.glob("*.safetensors")):
+            with safe_open(str(shard), framework="pt") as f:
+                names.extend(f.keys())
+    return [k for k in names if "lora_A" in k or "lora_B" in k]
+
+
+def _restore_unmerged_peft_checkpoint(reward_model, checkpoint_dir: Path, exp_config, peft_config):
+    """Re-attach LoRA and reload an unmerged PEFT checkpoint that has no adapter files.
+
+    No-op unless all of these hold, so merged / adapter-carrying / non-PEFT
+    checkpoints are left exactly as setup_model_and_processor loaded them:
+      * the checkpoint directory has no adapter_config.json,
+      * the checkpoint actually contains lora_A/lora_B tensors,
+      * the live model has no LoRA parameters (PEFT really was skipped).
+    """
+    if not checkpoint_dir.is_dir():
+        return reward_model
+    if (checkpoint_dir / "adapter_config.json").is_file():
+        return reward_model
+
+    ckpt_lora_keys = _checkpoint_lora_keys(checkpoint_dir)
+    if not ckpt_lora_keys:
+        return reward_model
+
+    model_lora_keys = [k for k in reward_model.state_dict() if "lora_A" in k or "lora_B" in k]
+    if model_lora_keys:
+        return reward_model
+
+    from robometer.utils.setup_utils import (
+        _load_checkpoint_weights_from_safetensors,
+        setup_peft_model,
+    )
+
+    logger.warning(
+        f"Checkpoint {checkpoint_dir} carries {len(ckpt_lora_keys)} unmerged LoRA tensors but no "
+        "adapter files, and the loaded model has none: re-attaching LoRA and reloading weights."
+    )
+    reward_model = setup_peft_model(reward_model, peft_config)
+    _load_checkpoint_weights_from_safetensors(
+        reward_model,
+        str(checkpoint_dir),
+        exp_config.model,
+        load_adapters=True,
+        # The heads were already loaded by setup_model_and_processor's own pass over this
+        # same checkpoint, so they will not change again here; that is not a failure.
+        expect_head_change=False,
+    )
+
+    # Verify the adapter really landed. lora_B initialises to all-zeros, so a
+    # trained adapter MUST have a nonzero lora_B somewhere; all-zero means the
+    # reload silently missed again and the reward model is still the raw base.
+    state = reward_model.state_dict()
+    loaded = [k for k in state if "lora_A" in k or "lora_B" in k]
+    if len(loaded) != len(ckpt_lora_keys):
+        raise RuntimeError(
+            f"PEFT restore mismatch: model now exposes {len(loaded)} LoRA tensors but the "
+            f"checkpoint stores {len(ckpt_lora_keys)}."
+        )
+    lora_b = [state[k] for k in loaded if "lora_B" in k]
+    nonzero = sum(1 for t in lora_b if t.count_nonzero().item() > 0)
+    if nonzero == 0:
+        raise RuntimeError(
+            f"PEFT restore failed: all {len(lora_b)} lora_B tensors are zero after reload, so the "
+            f"trained adapter in {checkpoint_dir} was not applied."
+        )
+    logger.info(
+        f"PEFT restore verified: {len(loaded)} LoRA tensors loaded, {nonzero}/{len(lora_b)} "
+        "lora_B tensors nonzero."
+    )
+    return reward_model
+
+
 def load_model_from_hf(
     model_path: str,
     device: torch.device,
@@ -969,6 +1051,23 @@ def load_model_from_hf(
     tokenizer, processor, reward_model = setup_model_and_processor(
         exp_config.model, str(resolved_path), peft_config=peft_config
     )
+
+    # LoRA checkpoints written by train.py hold an UNMERGED PEFT state dict whose
+    # language-model tensors live under `model.language_model.base_model.model.*`,
+    # because setup_peft_model attaches LoRA to inner.language_model. HF Trainer
+    # saves that full dict and emits NO adapter_config.json, so
+    # setup_model_and_processor takes its "no adapter files" branch, builds the
+    # base WITHOUT PEFT, and none of its remap strategies can reach those keys:
+    # every lora_A/lora_B and every `base_layer.weight` is discarded as
+    # "unexpected" and the LM backbone silently stays at raw base_model_id init.
+    # Training never noticed because train.py calls setup_peft_model immediately
+    # after; inference paths (eval_server, the RL reward loader) did not.
+    # Rebuild the same structure here and reload, so the keys match directly.
+    if peft_config is not None:
+        reward_model = _restore_unmerged_peft_checkpoint(
+            reward_model, Path(resolved_path), exp_config, peft_config
+        )
+
     reward_model = reward_model.to(device)
     reward_model.eval()
 
