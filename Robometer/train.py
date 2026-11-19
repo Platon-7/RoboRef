@@ -375,8 +375,13 @@ def train(cfg: ExperimentConfig):
         return
 
     trainer.train(resume_from_checkpoint=resume_path)
-    trainer.save_model(cfg.training.output_dir)
-    rank_0_info(f"Training complete! Check {cfg.training.output_dir} for checkpoints and final model.")
+    # Save the final model next to this run's checkpoints, i.e. output_dir/<exp_name>.
+    # cfg.training.output_dir is the shared parent, so concurrent runs over one output_dir
+    # (a job array sweeping a loss hyperparameter, say) all raced to write the same
+    # model-0000N-of-0000M.safetensors there and clobbered each other's final model.
+    final_dir = trainer.args.output_dir
+    trainer.save_model(final_dir)
+    rank_0_info(f"Training complete! Check {final_dir} for checkpoints and final model.")
 
 
 @hydra_main(version_base=None, config_path="robometer/configs", config_name="config")
