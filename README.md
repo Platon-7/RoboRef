@@ -2,6 +2,13 @@
 
 Research code behind **RoboRef**, a fine-tune of Robometer trained on densely labeled robot failures with an asymmetric loss, and its evaluation offline and in downstream RL.
 
+## Running RoboRef in RL
+
+[`RUNNING_ROBOREF.md`](RUNNING_ROBOREF.md) is the recommended recipe for driving downstream
+RL with a RoboRef checkpoint: which head goes with which stack, the pre-flight gates that
+catch a reward model whose heads silently failed to load, the sparse (MetaWorld/IBRL) and
+dense (ManiSkill/SAC) protocols, and the traps that have each cost us a run.
+
 ## Repository map
 
 | Folder | What it contains | Conda env |
