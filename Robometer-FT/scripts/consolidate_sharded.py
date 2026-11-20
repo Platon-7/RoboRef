@@ -169,7 +169,8 @@ def save_safetensors(state_dict: Dict[str, torch.Tensor], out_dir: Path, max_sha
     print(f"  wrote model.safetensors.index.json  ({n} shards, {total_bytes / 1e9:.2f} GB total)")
 
 
-def copy_aux_files(base_model_id: str, ckpt_dir: Path, out_dir: Path) -> None:
+def copy_aux_files(base_model_id: str, ckpt_dir: Path, out_dir: Path,
+                   keep_base_architectures: bool = False) -> None:
     """Copy / regenerate the auxiliary files needed for HF-style loading:
         - config.json   (from the base model, augmented with RBM head metadata)
         - tokenizer / processor files (from the base model, but with the 6 RBM special tokens added)
@@ -201,11 +202,25 @@ def copy_aux_files(base_model_id: str, ckpt_dir: Path, out_dir: Path) -> None:
         processor.save_pretrained(str(out_dir))
         print(f"  saved processor with 6 RBM special tokens added (vocab size {len(tok)})")
 
-    # Save the config with `architectures: ['RBM']` so AutoConfig knows to use the
-    # vendored RBM class. The RBM head metadata (which heads are present, head dims)
-    # should already be in the original training config dump — copy it if it exists.
+    # `architectures` decides which class the HF loader resolves, and the right
+    # answer depends on the transformers version downstream:
+    #
+    #   default (<= 4.x):  ['RBM'] so AutoConfig picks the vendored RBM class.
+    #
+    #   keep_base_architectures (transformers 5.7+): leave the BASE model's value
+    #     (e.g. 'Qwen3_5ForConditionalGeneration'). That loader path calls
+    #     `<Base>ForConditionalGeneration.from_pretrained(out_dir)` and only then
+    #     wraps the result in RBM, loading head weights through
+    #     `_load_checkpoint_weights_from_safetensors`. transformers 5.7's
+    #     `_finalize_model_loading` resolves the class from this field and reaches
+    #     for internals on it, so ['RBM'] crashes with
+    #       AttributeError: 'RBM' object has no attribute 'all_tied_weights_keys'
+    #
+    # Either way the RBM head metadata (which heads exist, head dims) travels in
+    # config.yaml, copied below, and RBM reads it at construction time.
     cfg_dict = base_config.to_dict()
-    cfg_dict["architectures"] = ["RBM"]
+    if not keep_base_architectures:
+        cfg_dict["architectures"] = ["RBM"]
 
     # If the trainer saved a config.yaml alongside the shards, include head info.
     # Robometer's load_model_from_hf (utils/save.py:903) requires `config.yaml`
@@ -220,7 +235,7 @@ def copy_aux_files(base_model_id: str, ckpt_dir: Path, out_dir: Path) -> None:
               f"load_model_from_hf can find it)")
 
     (out_dir / "config.json").write_text(json.dumps(cfg_dict, indent=2))
-    print(f"  wrote config.json  (architectures=['RBM'])")
+    print(f"  wrote config.json  (architectures={cfg_dict.get('architectures')})")
 
 
 def main():
@@ -233,6 +248,12 @@ def main():
                     help="Output dir for consolidated HF-format checkpoint")
     ap.add_argument("--shard-bytes", type=int, default=5_000_000_000,
                     help="Max bytes per safetensors shard (default 5 GB)")
+    ap.add_argument("--keep-base-architectures", action="store_true",
+                    help="Leave config.json's `architectures` as the base model emitted it "
+                         "instead of overwriting it with ['RBM']. Required when the "
+                         "checkpoint will be loaded under transformers 5.7+, where "
+                         "['RBM'] fails with \"'RBM' object has no attribute "
+                         "'all_tied_weights_keys'\".")
     args = ap.parse_args()
 
     print(f"=" * 60)
@@ -253,7 +274,8 @@ def main():
     save_safetensors(state_dict, args.out_dir, max_shard_bytes=args.shard_bytes)
 
     print("\n[3/3] copying aux files (config, tokenizer, processor) …")
-    copy_aux_files(args.base_model_id, args.ckpt_dir, args.out_dir)
+    copy_aux_files(args.base_model_id, args.ckpt_dir, args.out_dir,
+                   keep_base_architectures=args.keep_base_architectures)
 
     print(f"\n{'=' * 60}")
     print(f"DONE → {args.out_dir}")

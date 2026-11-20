@@ -47,14 +47,35 @@ head is exactly a better *terminal* signal. The dense regime is where reward hac
 
 Training runs save FSDP `SHARDED_STATE_DICT`
 (`pytorch_model_fsdp_0/__{0..7}_0.distcp` + `.metadata`). **`from_pretrained()` cannot read
-that** — consolidate to safetensors first (`consolidate_sharded_*.py` in the handoff package).
+that** — consolidate to safetensors first:
+
+```bash
+python Robometer-FT/scripts/consolidate_sharded.py \
+    --ckpt-dir  /path/to/<run>/checkpoint-5000 \
+    --base-model-id Qwen/Qwen3-VL-4B-Instruct \
+    --out-dir   /path/to/consolidated/<run>_step5000 \
+    --keep-base-architectures          # ONLY on transformers 5.7+, see below
+```
+
+CPU-only, ~5–15 min, no GPU. It needs `config.yaml` to sit in `<ckpt_dir>/..` (the run
+directory, not the checkpoint directory) — that is where the head metadata comes from.
+
+**`--keep-base-architectures` is the one flag to get right.** By default the script writes
+`architectures: ['RBM']`, which is what transformers 4.x wants. On **transformers 5.7+** that
+same value makes loading die with `AttributeError: 'RBM' object has no attribute
+'all_tied_weights_keys'`, because 5.7 resolves the class from that field and then reaches for
+internals on it. Pass the flag and the base model's own `architectures` is kept; the loader
+then builds the base class and wraps it in RBM afterwards. If consolidation "succeeded" but
+loading explodes on an attribute error, this is why — it is not a corrupt checkpoint.
+
 Two things about the shards:
 
 * they hold **fp32 master weights** — load with `torch_dtype=torch.bfloat16` or you carry
   stray fp32 params;
 * consolidation is the step that can silently drop the RBM heads. That is what §3 gates.
 
-Checkpoints are not in git. See the root [`README.md`](README.md) for where they live.
+Checkpoints are not in git — see the root [`README.md`](README.md) for where they live, and
+pull them from the transfer drive before any of this.
 
 ---
 
@@ -328,8 +349,8 @@ Fallback: run offline and `python -m wandb sync` afterwards (call it as `python 
 
 Steps 4 and 5 are the two that are cheap to run and expensive to discover late. If the canary
 comes back at AUC ~0.5 on a checkpoint whose training metrics were healthy, that is a
-**consolidation** failure — re-run consolidation with the other script before considering a
-retrain.
+**consolidation** failure — re-run consolidation, flipping `--keep-base-architectures` to match
+the transformers version you load under (§2), before considering a retrain.
 
 ---
 
@@ -355,6 +376,7 @@ Measured, for sanity-checking a new run against a known-good one.
 | What | Where |
 |---|---|
 | Reward-model library, asymmetric loss | `Robometer/robometer/trainers/rbm_heads_trainer.py` |
+| Checkpoint consolidation (.distcp -> safetensors) | `Robometer-FT/scripts/consolidate_sharded.py` |
 | Sparse RL (IBRL/RLPD) | `vlm_ibrl/`, entry `mw_main/train_rl_vlm_mw.py` |
 | Reward wrapper + every `ROBOMETER_*` lever | `vlm_ibrl/env/vlm_envs.py` |
 | Dense RL (SAC) | `robometer-policy-learning/`, entry `scripts/train.py` |
