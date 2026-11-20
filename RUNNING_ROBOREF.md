@@ -38,9 +38,38 @@ head is exactly a better *terminal* signal. The dense regime is where reward hac
 
 ## 2. Get a loadable checkpoint
 
+### 2.1 Easiest path: the published model
+
+**RoboRef is on the Hub as [`roboref-reward/RoboRef-4B`](https://huggingface.co/roboref-reward/RoboRef-4B)**
+— already consolidated safetensors, `config.yaml` included, model card with working usage code.
+It is byte-for-byte the paper checkpoint (`run2_noicl_ours_step4000`).
+
+The repo is **private**, so ask for access to the `roboref-reward` org or for a read token,
+then:
+
+```python
+from robometer.utils.save import load_model_from_hf
+cfg, tokenizer, processor, model = load_model_from_hf(
+    "roboref-reward/RoboRef-4B", device=torch.device("cuda"), hub_token=HF_TOKEN)
+```
+
+**If you load from the Hub, skip the rest of §2 entirely** — there is nothing to consolidate.
+Go straight to the gates in §3; those still apply, because a dtype or unsloth mistake can
+still hand you a noise generator.
+
+One caveat with no escape hatch: the published `config.json` carries
+`architectures: ['RBM']`, which is right for the **transformers 4.57.x** that
+`Robometer/pyproject.toml` pins (`transformers>=4.57`, and `uv sync` resolves 4.57.x). Under
+transformers **5.x** that same field fails with `AttributeError: 'RBM' object has no attribute
+'all_tied_weights_keys'` — and since you have no `.distcp` shards, you cannot re-consolidate
+your way out of it. Pin transformers, or patch `architectures` in your local copy of
+`config.json`.
+
+### 2.2 From a raw training run
+
 | Checkpoint | What it is |
 |---|---|
-| `run2_noicl_ours_step4000` | **RoboRef** — the paper checkpoint (asymmetric loss) |
+| `run2_noicl_ours_step4000` | **RoboRef** — the paper checkpoint (asymmetric loss), = the Hub model above |
 | `run3_noicl_standard_step5000` | symmetric-loss control (Robometer-4B + Failures) |
 | `abl_origdata_asym_step5000` | asym arm of the loss-vs-data ablation (Robometer's own data) |
 | `robometer/Robometer-4B` (HF) | published baseline; useful control, **`max_frames: 8`** |
@@ -336,7 +365,7 @@ Fallback: run offline and `python -m wandb sync` afterwards (call it as `python 
 ## 8. Order of operations
 
 ```
-1. consolidate the checkpoint (.distcp -> safetensors, bf16)        §2
+1. get the weights: Hub (nothing to do) or consolidate .distcp     §2
 2. preflight_reward_model.py --ckpt <dir>                           §3.1
 3. export ROBOMETER_DISABLE_UNSLOTH=1                               §3.2
 4. canary: peak success_prob 0.7-0.9 on true successes              §3.3   <- gate
@@ -347,10 +376,12 @@ Fallback: run offline and `python -m wandb sync` afterwards (call it as `python 
 9. confirm [online-levers] in the env log, not just the job header  §4.6
 ```
 
+Step 1 is a no-op if you pulled `roboref-reward/RoboRef-4B` from the Hub (§2.1).
+
 Steps 4 and 5 are the two that are cheap to run and expensive to discover late. If the canary
 comes back at AUC ~0.5 on a checkpoint whose training metrics were healthy, that is a
 **consolidation** failure — re-run consolidation, flipping `--keep-base-architectures` to match
-the transformers version you load under (§2), before considering a retrain.
+the transformers version you load under (§2.2), before considering a retrain.
 
 ---
 
@@ -375,6 +406,7 @@ Measured, for sanity-checking a new run against a known-good one.
 
 | What | Where |
 |---|---|
+| Published weights + model card | `roboref-reward/RoboRef-4B` on the HF Hub (private) |
 | Reward-model library, asymmetric loss | `Robometer/robometer/trainers/rbm_heads_trainer.py` |
 | Checkpoint consolidation (.distcp -> safetensors) | `Robometer-FT/scripts/consolidate_sharded.py` |
 | Sparse RL (IBRL/RLPD) | `vlm_ibrl/`, entry `mw_main/train_rl_vlm_mw.py` |
