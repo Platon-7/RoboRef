@@ -59,6 +59,8 @@ class RobometerReplayBuffer(ReplayBuffer):
         icl_demo_seed: int = 0,
         progress_beta: float = 1.0,
         progress_binarize_threshold: Optional[float] = None,
+        multiview_reduce: str = "mean",
+        embedding_keys: Optional[List[str]] = None,
         fp_mask_tau: Optional[float] = None,
         **kwargs,
     ):
@@ -95,6 +97,33 @@ class RobometerReplayBuffer(ReplayBuffer):
         # normalize_reward/progress_as_potential, same as the reference implementation.
         self.progress_beta = float(progress_beta)
         self.progress_binarize_threshold = progress_binarize_threshold
+        # HOW SEVERAL VIEWS COMBINE into one reward (reward_relabeling_keys).
+        #   "mean" -- historical behaviour, and what a single view reduces to.
+        #   "min"  -- the anti-occlusion reduction. One camera cannot tell a
+        #             solved task from an arm parked in front of the object, so
+        #             a single view lets the policy earn reward by HIDING the
+        #             object (measured on PullCube: progress rose while GT
+        #             success sat at 0.1%). min() pays only what the WORST view
+        #             supports, so the task must look done from every angle.
+        # Success detection needs no switch: the existing majority vote
+        # (vote > len(keys) * duration / 2) already requires BOTH views to fire
+        # when there are two keys and duration is 1.
+        if multiview_reduce not in ("mean", "min"):
+            raise ValueError(
+                f"multiview_reduce must be 'mean' or 'min', got {multiview_reduce!r}"
+            )
+        self.multiview_reduce = str(multiview_reduce)
+        # WHICH keys the concatenated DINO embedding actually covers.
+        # The DinoEmbeddingWrapper emits ONE "dino_embedding" of width
+        # 768 * len(dino_image_keys), so the chunk layout follows the DINO keys,
+        # NOT reward_relabeling_keys. Those two were the same list until a
+        # reward-only second view was added; assuming they still match splits a
+        # single 768-d embedding into two 384-d halves and silently feeds the
+        # reward model garbage. None = they match (historical behaviour).
+        self.embedding_keys = list(embedding_keys) if embedding_keys else None
+        _ek = self.embedding_keys if self.embedding_keys is not None else self.reward_relabeling_keys
+        self._embedding_index = {k: i for i, k in enumerate(_ek)}
+        self._n_embedding_keys = len(_ek)
         # Oracle false-positive mask (see _add). A diagnostic, not a method: it reads GT.
         self.fp_mask_tau = None if fp_mask_tau is None else float(fp_mask_tau)
         self._fp_seen = 0
@@ -473,14 +502,22 @@ class RobometerReplayBuffer(ReplayBuffer):
     # ------------------------------------------------------------------
     # On-policy episode instrumentation
     # ------------------------------------------------------------------
-    def _eplog_step(self, eid, *, prog, sp, reward, gt_now):
-        """Accumulate one env-step of an episode. Cheap no-op when disabled."""
+    def _eplog_step(self, eid, *, prog, sp, reward, gt_now, view_prog=None, view_sp=None):
+        """Accumulate one env-step of an episode. Cheap no-op when disabled.
+
+        ``view_prog``/``view_sp`` carry the PER-VIEW head outputs, in
+        reward_relabeling_keys order, before they are reduced to one reward.
+        Without them a multi-view run cannot be audited: the disagreement
+        between views IS the occlusion measurement, and it is unrecoverable
+        from the reduced value alone.
+        """
         if not self._eplog_path:
             return
         e = self._eplog.get(eid)
         if e is None:
             e = self._eplog[eid] = {
                 "prog": [], "sp": [], "r": [], "gt": [],
+                "vprog": [], "vsp": [],
                 "fired": False, "fire_step": None, "gt_solved_at_fire": None,
                 "gate_suppressed": False,
             }
@@ -488,6 +525,10 @@ class RobometerReplayBuffer(ReplayBuffer):
         e["sp"].append(round(float(sp), 5))
         e["r"].append(round(float(reward), 5))
         e["gt"].append(int(bool(gt_now)))
+        if view_prog is not None:
+            e["vprog"].append(list(view_prog))
+        if view_sp is not None:
+            e["vsp"].append(list(view_sp))
 
     def _eplog_mark_fire(self, eid, *, step, gt_now, suppressed=False):
         """Record a detector fire, or a fire blocked by the min-episode gate."""
@@ -510,6 +551,8 @@ class RobometerReplayBuffer(ReplayBuffer):
         e = self._eplog.pop(eid, None)
         if e is None or not e["r"]:
             return
+        e.setdefault("vprog", [])
+        e.setdefault("vsp", [])
         gt = e["gt"]
         solved_any = any(gt)
         rec = {
@@ -527,6 +570,11 @@ class RobometerReplayBuffer(ReplayBuffer):
             "gt_per_step": gt,                # lets any metric be recomputed offline
             "score_max": max(e["prog"]) if e["prog"] else None,
             "sp_max": max(e["sp"]) if e["sp"] else None,
+            # --- multi-view audit: per-step, per-view head outputs ---
+            "view_keys": list(self.reward_relabeling_keys),
+            "multiview_reduce": self.multiview_reduce,
+            "score_per_step_per_view": (e.get("vprog") or None),
+            "sp_per_step_per_view": (e.get("vsp") or None),
             # --- detector fields: present only if detection is on ---
             "detection_enabled": bool(self.use_success_detection),
             "fired": (int(e["fired"]) if self.use_success_detection else None),
@@ -620,6 +668,7 @@ class RobometerReplayBuffer(ReplayBuffer):
             # binarisation / normalisation / potential shaping so the recorded
             # scores can be re-thresholded offline without a re-run.
             _raw_prog_sum, _raw_sp_max = 0.0, 0.0
+            _view_rewards, _view_prog, _view_sp = [], [], []
             for index, key in enumerate(self.reward_relabeling_keys):
                 # Convert embeddings to proper format (common for both paths)
                 if isinstance(dino_embeddings, list) and len(dino_embeddings) > 0:
@@ -628,11 +677,16 @@ class RobometerReplayBuffer(ReplayBuffer):
                 # Take subset for this key: each key's embedding is a chunk of the list
                 # since dino embeddings for each key are concatenated.
                 video_embeddings_array = None
-                if len(dino_embeddings) > 0:
-                    embeddings_per_key = dino_embeddings.shape[1] // len(self.reward_relabeling_keys)
+                _emb_i = self._embedding_index.get(key)
+                if len(dino_embeddings) > 0 and _emb_i is not None:
+                    embeddings_per_key = dino_embeddings.shape[1] // self._n_embedding_keys
                     video_embeddings_array = dino_embeddings[
-                        :, index * embeddings_per_key : (index + 1) * embeddings_per_key
+                        :, _emb_i * embeddings_per_key : (_emb_i + 1) * embeddings_per_key
                     ]
+                # A view with no DINO chunk of its own passes None, so the reward
+                # model embeds the raw frames itself. That is exactly what the
+                # calibration script does, i.e. the path the thresholds were
+                # derived on -- not a degraded fallback.
 
                 _frames = np.array(video_frames[key]) if video_frames[key] is not None else np.array([])
                 _frames = self._pad_to_max_frames(_frames)
@@ -652,6 +706,8 @@ class RobometerReplayBuffer(ReplayBuffer):
                 self.success_tracker[key].append(success_prob)
                 _raw_prog_sum += float(reward)
                 _raw_sp_max = max(_raw_sp_max, float(success_prob))
+                _view_prog.append(round(float(reward), 5))
+                _view_sp.append(round(float(success_prob), 5))
 
                 # BETA-MIX (progress_beta != 1.0). success_tracker above already got the
                 # RAW success_prob -- use_success_detection's termination gate must stay
@@ -690,9 +746,15 @@ class RobometerReplayBuffer(ReplayBuffer):
                     self.prev_reward[key] = current_reward
                     if kwargs.get("done") or kwargs.get("truncated"):
                         self.prev_reward[key] = 0.0
-                avg_reward += reward
+                _view_rewards.append(float(reward))
 
-            avg_reward /= len(self.reward_relabeling_keys)
+            # Reduce the per-view rewards to the one number SAC trains on.
+            # "mean" over a single view is that view, so one-view runs are
+            # unchanged either way.
+            if self.multiview_reduce == "min":
+                avg_reward = min(_view_rewards)
+            else:
+                avg_reward = sum(_view_rewards) / len(_view_rewards)
 
             # DISCRIMINATION LOGGING (RPL_LOG_DISCRIM=1): accumulate the RM reward
             # per episode and, when the episode ends, log it next to the GT success
@@ -779,6 +841,8 @@ class RobometerReplayBuffer(ReplayBuffer):
                 sp=_raw_sp_max,
                 reward=kwargs["reward"],
                 gt_now=bool(kwargs.get("is_success") or kwargs.get("success")),
+                view_prog=_view_prog,
+                view_sp=_view_sp,
             )
             # REWARD-SOURCE PROOF (RPL_LOG_REWARD=1): first ~30 steps, show the env/GT
             # reward coming in, the VLM reward, and the final reward SAC trains on. If
@@ -877,6 +941,7 @@ class RobometerH5ReplayBuffer(H5ReplayBuffer):
         potential_scale: float = 1.0,
         success_detection_threshold: float = 0.65,
         add_estimated_reward: bool = False,
+        multiview_reduce: str = "mean",
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -905,6 +970,13 @@ class RobometerH5ReplayBuffer(H5ReplayBuffer):
         self._phi_prev = {}
         self.success_detection_threshold = success_detection_threshold
         self.add_estimated_reward = add_estimated_reward
+        # Must match the online buffer's reduction, or an offline-relabelled demo
+        # and a live step disagree about what the reward for the same frames is.
+        if multiview_reduce not in ("mean", "min"):
+            raise ValueError(
+                f"multiview_reduce must be 'mean' or 'min', got {multiview_reduce!r}"
+            )
+        self.multiview_reduce = str(multiview_reduce)
 
         # Set max_frames once from config
         if reward_model_config is not None:
@@ -1088,7 +1160,10 @@ class RobometerH5ReplayBuffer(H5ReplayBuffer):
                 for key in reward_keys:
                     per_key_rewards.append(all_rewards_flat[key][start_idx:end_idx])
                     per_key_success_probs.append(all_success_probs_flat[key][start_idx:end_idx])
-            demo_rewards = np.array(per_key_rewards, dtype=np.float32).mean(axis=0)
+            _pk = np.array(per_key_rewards, dtype=np.float32)
+            # Same reduction as the online path (see multiview_reduce), so an
+            # offline-relabelled demo and a live step agree on what the reward is.
+            demo_rewards = _pk.min(axis=0) if self.multiview_reduce == "min" else _pk.mean(axis=0)
             if self.add_estimated_reward:
                 cached_demo["rewards"] += demo_rewards
             else:

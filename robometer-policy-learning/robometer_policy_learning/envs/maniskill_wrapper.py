@@ -92,6 +92,7 @@ class ManiSkillSingleEnvWrapper(gym.Wrapper):
         use_full_state: bool = False,
         terminate_on_success: bool = True,
         proprio_dim: int = 9,
+        second_view: Optional[str] = None,
     ):
         super().__init__(env)
         self.image_size = image_size
@@ -105,6 +106,18 @@ class ManiSkillSingleEnvWrapper(gym.Wrapper):
         # reported in info, and eval measures success_once by OR-ing across steps.
         self.terminate_on_success = terminate_on_success
         self.proprio_dim = proprio_dim
+        # A SECOND camera, emitted as "image2", for multi-view reward scoring.
+        # The reward model sees one view only, so an arm pose that hides the
+        # object makes the task look done when it is not -- and the policy's
+        # DINO features come from that same view, so nothing in the pipeline
+        # can notice. Scoring a second, near-opposite view and taking the MIN
+        # removes that exploit by construction: reward is earned only if the
+        # task looks done from every angle.
+        #
+        # None keeps the single-view behaviour byte for byte. The policy's own
+        # observation is unaffected either way -- that is governed by
+        # dino_image_keys, so turning this on does not change the actor.
+        self.second_view = second_view
 
         # --- action space: expose the unbatched view ------------------------
         act_space = env.action_space
@@ -126,12 +139,19 @@ class ManiSkillSingleEnvWrapper(gym.Wrapper):
         state = self._extract_state(raw_obs)
         self._state_dim = int(state.shape[0])
 
-        self.observation_space = gym.spaces.Dict(
-            {
-                "state": gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self._state_dim,), dtype=np.float32),
-                "image": gym.spaces.Box(low=0, high=255, shape=(image_size, image_size, 3), dtype=np.uint8),
-            }
-        )
+        _spaces = {
+            "state": gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self._state_dim,), dtype=np.float32),
+            "image": gym.spaces.Box(low=0, high=255, shape=(image_size, image_size, 3), dtype=np.uint8),
+        }
+        if self.second_view is not None:
+            # Fail here, at construction, rather than 20 minutes into a run:
+            # a typo'd camera name would otherwise surface as a KeyError on the
+            # first step of the first episode.
+            _probe = self._render_named(self.second_view)
+            _spaces["image2"] = gym.spaces.Box(
+                low=0, high=255, shape=_probe.shape, dtype=np.uint8
+            )
+        self.observation_space = gym.spaces.Dict(_spaces)
 
     # ------------------------------------------------------------------
     # observation plumbing
@@ -195,12 +215,11 @@ class ManiSkillSingleEnvWrapper(gym.Wrapper):
         arr = np.asarray(arr, dtype=np.float32).reshape(-1)
         return arr if self.use_full_state else arr[: self.proprio_dim]
 
-    def _render_image(self) -> np.ndarray:
-        """Render the current frame as an HWC uint8 array, no flip."""
-        image = self.env.render()
+    def _normalize_frame(self, image: Any, what: str) -> np.ndarray:
+        """Coerce a rendered frame to a contiguous HWC uint8 array, no flip."""
         image = _to_numpy(image)
         if image is None:
-            raise RuntimeError("ManiSkill env.render() returned None; is render_mode='rgb_array' set?")
+            raise RuntimeError(f"{what} returned None; is render_mode='rgb_array' set?")
         image = _debatch(np.asarray(image), expected_ndim=3)
         if image.dtype != np.uint8:
             # Some render paths hand back float in [0, 1].
@@ -212,8 +231,43 @@ class ManiSkillSingleEnvWrapper(gym.Wrapper):
         image = _resize_image(image, self.image_size)
         return np.ascontiguousarray(image)
 
+    def _render_image(self) -> np.ndarray:
+        """Render the current frame as an HWC uint8 array, no flip."""
+        return self._normalize_frame(self.env.render(), "ManiSkill env.render()")
+
+    def _render_named(self, name: str) -> np.ndarray:
+        """Render one named camera, whether it is a render camera or a sensor.
+
+        ManiSkill splits cameras in two: ``human_render_cameras`` (what
+        ``env.render()`` returns) and ``sensors`` (what the agent observes).
+        PullCube-v1 defines ``render_camera`` as the former and ``base_camera``
+        as the latter, so a second view has to be able to come from either.
+        """
+        u = self.env.unwrapped
+        human = dict(getattr(getattr(u, "scene", None), "human_render_cameras", None) or {})
+        human.update(getattr(u, "_human_render_cameras", None) or {})
+        if name in human:
+            return self._normalize_frame(u.render_rgb_array(name), f"render_rgb_array({name!r})")
+
+        sensors = u.get_sensor_images()
+        if name not in sensors:
+            raise KeyError(
+                f"second_view={name!r} is neither a human render camera nor a sensor. "
+                f"render cameras={sorted(human)}, sensors={sorted(sensors)}"
+            )
+        frame = sensors[name].get("rgb")
+        if frame is None:
+            raise KeyError(
+                f"sensor {name!r} produced no 'rgb' modality (has {sorted(sensors[name])}); "
+                "it cannot be used as a second view."
+            )
+        return self._normalize_frame(frame, f"sensor {name!r}")
+
     def _build_obs(self, raw_obs: Any) -> Dict[str, np.ndarray]:
-        return {"state": self._extract_state(raw_obs), "image": self._render_image()}
+        obs = {"state": self._extract_state(raw_obs), "image": self._render_image()}
+        if self.second_view is not None:
+            obs["image2"] = self._render_named(self.second_view)
+        return obs
 
     @staticmethod
     def _clean_info(info: Dict[str, Any]) -> Dict[str, Any]:
@@ -292,6 +346,7 @@ def make_maniskill_env(
     dinov2_processor=None,
     dino_image_keys: Optional[List[str]] = None,
     device: Optional[str] = None,
+    second_view: Optional[str] = None,
 ) -> Tuple[gym.Env, str]:
     """Build a vectorized ManiSkill env matching this codebase's conventions.
 
@@ -353,8 +408,9 @@ def make_maniskill_env(
             env = ManiSkillSingleEnvWrapper(
                 env,
                 image_size=image_size,
-            terminate_on_success=terminate_on_success,
+                terminate_on_success=terminate_on_success,
                 use_full_state=use_full_state,
+                second_view=second_view,
             )
             if seed is not None:
                 env.reset(seed=seed + rank)

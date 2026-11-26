@@ -62,7 +62,20 @@ def main(cfg: DictConfig):
     logger = components.logger
     wandb_logger = components.wandb_logger
     reward_model_cfg = OmegaConf.select(cfg, "reward_model", default=None)
-    reward_relabeling_keys = components.dino_image_keys
+    # The views the REWARD is scored from. Defaults to the policy's DINO image
+    # keys (historical behaviour), but reward_model.reward_relabeling_keys can
+    # name more -- e.g. a second camera used only for scoring. Keeping the two
+    # lists separate is what lets a multi-view reward run against an UNCHANGED
+    # actor: dino_embedding stays 768*len(dino_image_keys) wide, so checkpoints
+    # from single-view runs still load.
+    _relabel_cfg = OmegaConf.select(cfg, "reward_model.reward_relabeling_keys", default=None)
+    reward_relabeling_keys = list(_relabel_cfg) if _relabel_cfg else components.dino_image_keys
+    _multiview_reduce = OmegaConf.select(cfg, "reward_model.multiview_reduce", default="mean")
+    if list(reward_relabeling_keys) != list(components.dino_image_keys):
+        rprint(
+            f"[reward] scoring views={list(reward_relabeling_keys)} "
+            f"reduce={_multiview_reduce}; policy views={list(components.dino_image_keys)}"
+        )
 
     # Override num_offline_steps in debug mode
     if cfg.debug:
@@ -130,6 +143,8 @@ def main(cfg: DictConfig):
             dinov2_model=components.dinov2_model,
             dinov2_processor=components.dinov2_processor,
             reward_relabeling_keys=reward_relabeling_keys,
+            embedding_keys=components.dino_image_keys,
+            multiview_reduce=_multiview_reduce,
             use_success_detection=cfg.reward_model.use_success_detection if cfg.reward_model is not None else False,
             success_detection_duration=cfg.reward_model.success_detection_duration
             if cfg.reward_model is not None
@@ -273,6 +288,8 @@ def main(cfg: DictConfig):
             use_async_reward_relabel=use_async_reward_relabel and reward_model is not None,
             reward_model=reward_model,
             reward_relabeling_keys=reward_relabeling_keys,
+            embedding_keys=components.dino_image_keys,
+            multiview_reduce=_multiview_reduce,
             reward_relabel_address=reward_relabel_address
             if use_async_reward_relabel and reward_model is not None
             else None,

@@ -86,6 +86,13 @@ env:
     sim_backend: "physx_cpu"
     image_size: 224
     instruction: null       # null -> the task's default instruction
+    # Name of a SECOND camera to render into obs["image2"], for scoring the
+    # reward from two viewpoints (see reward_model.multiview_reduce). Accepts a
+    # human render camera or a sensor; PullCube-v1 has "render_camera" (512^2,
+    # fov 1.0) and "base_camera" (128^2, fov pi/2). null = one view, unchanged.
+    # Declared so that `env.env_kwargs.second_view=...` is an override rather
+    # than a Hydra composition error.
+    second_view: null
 
 # Training configuration
 training:

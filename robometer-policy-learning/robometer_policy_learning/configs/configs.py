@@ -320,7 +320,16 @@ class RewardModelConfig:
     )
     reward_relabeling_keys: List[str] = field(
         default_factory=lambda: ["image"],
-        metadata={"help": "Observation keys to use for reward relabeling (e.g., ['image'] for images)"},
+        metadata={"help": "Observation keys to use for reward relabeling (e.g., ['image'] for images). "
+                          "May name MORE keys than env.dino_image_keys -- e.g. ['image', 'image2'] to "
+                          "score a second camera without changing the policy's input."},
+    )
+    multiview_reduce: str = field(
+        default="mean",
+        metadata={"help": "How several reward_relabeling_keys combine into one reward. 'mean' is the "
+                          "historical behaviour. 'min' pays only what the WORST view supports, which "
+                          "removes the single-camera occlusion exploit: an arm parked in front of the "
+                          "object can no longer make the task look solved."},
     )
     icl_demo_path: Optional[str] = field(
         default=None,

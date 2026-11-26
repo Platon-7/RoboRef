@@ -62,6 +62,24 @@ add_estimated_reward: false
 # null -> no in-context demo, i.e. the run2/run3/baseline arms.
 icl_demo_path: null
 
+# Which observation keys the REWARD model scores. null -> fall back to
+# env.dino_image_keys (one view: unchanged behaviour). Set this to score more
+# views than the POLICY sees -- the DinoEmbeddingWrapper concatenates one
+# 768-d block per env.dino_image_keys entry, so adding a view there would widen
+# the actor's input and break checkpoint loading, while adding it here does not.
+# Declared here for the same reason as icl_demo_path above: undeclared means
+# `reward_model.reward_relabeling_keys=[...]` is a composition error, not an
+# override. That is exactly how job 299334 died on 2026-11-23.
+reward_relabeling_keys: null
+
+# How several reward_relabeling_keys combine into ONE per-step reward.
+# "mean" (default, unchanged) averages the views. "min" takes the pessimistic
+# view: a reward is only paid if EVERY camera agrees, which is the remedy for a
+# policy that farms reward by occluding the object from a single camera.
+# Success detection already requires a majority of views, which for two views
+# and success_detection_duration=1 means both.
+multiview_reduce: mean
+
 # Eval server settings (used when model_path is None)
 eval_server_url: "http://localhost"  # Evaluation server URL
 eval_server_port: 8000  # Evaluation server port

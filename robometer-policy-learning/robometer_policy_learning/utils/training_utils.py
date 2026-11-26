@@ -324,6 +324,8 @@ def create_buffer(
     dinov2_model: Optional[Any] = None,
     dinov2_processor: Optional[Any] = None,
     reward_relabeling_keys: List[str] = ["image"],
+    embedding_keys: Optional[List[str]] = None,
+    multiview_reduce: str = "mean",
     use_success_fail_buffer: bool = False,
     success_fail_sample_ratio: float = 0.5,
     use_async_reward_relabel: bool = False,
@@ -446,6 +448,7 @@ def create_buffer(
                     eval_server_url=eval_server_url,
                     eval_server_timeout=eval_server_timeout,
                     reward_relabeling_keys=reward_relabeling_keys,
+                    multiview_reduce=multiview_reduce,
                     use_success_detection=use_success_detection,
                     success_detection_duration=success_detection_duration,
                     success_detection_min_ep_steps=success_detection_min_ep_steps,
@@ -496,6 +499,8 @@ def create_buffer(
                     icl_demo_path=icl_demo_path,
                     progress_beta=progress_beta,
                     progress_binarize_threshold=progress_binarize_threshold,
+                    multiview_reduce=multiview_reduce,
+                    embedding_keys=embedding_keys,
                     fp_mask_tau=fp_mask_tau,
                 )
             else:
