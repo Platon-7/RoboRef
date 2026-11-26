@@ -1,0 +1,209 @@
+#!/bin/bash
+#SBATCH --job-name=ms_mix
+#SBATCH --output=logs/ms_mix_%A_%a.out
+#SBATCH --error=logs/ms_mix_%A_%a.err
+#SBATCH --time=36:00:00
+#SBATCH --account=ceesusers
+#SBATCH --partition=cees
+#SBATCH --constraint=A5000
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --gpus-per-node=1
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=40G   # measured job-cgroup peak 10-20 G across 36 cells;
+#                     80 G booked RAM nobody could use and blocked idle GPUs
+#SBATCH --array=0-11%8
+#SBATCH --no-requeue
+#
+# ManiSkill PullCube-v1 + SAC with the MIX (MetaWorld+ManiSkill) LoRA arms as
+# the frozen reward model. Sweep 295407, LAST checkpoint (step 4000 of 4000).
+#
+# 12 cells = 4 arms (lambda 0.1/0.3/0.7/1.0) x 3 seeds (1,2,3), one task.
+# IDX -> SEED_I = IDX%3, ARM_I = IDX/3.
+#
+# DENSE regime, progress head: the reward model REPLACES the env reward
+# (add_estimated_reward=false, env reward_mode=sparse), no VLM termination, no
+# GT termination, 50-step episodes. progress_beta stays at the robometer.yaml
+# default of 1.0 = pure progress head.
+#
+# The canonical recipe is BAKED IN (RECIPE_ARGS) exactly as in
+# jobs/snellius_maniskill_sac.job, because maniskill_online_rl.yaml ALONE gives
+# a different algorithm: it inherits terminate_on_success=true,
+# reward_shift=-1.0 and sac.yaml's LIBERO-tuned gamma 0.99 / tau 0.005 /
+# batch 128. Every published ManiSkill result used CLI overrides that were never
+# written into the config. RECIPE=0 opts out (then you own every knob).
+#
+# NOT using progress_as_potential: the published runs this is compared against
+# used the progress head as the reward LEVEL. The level is farmable (progress
+# rose 7x on PullCube while GT success stayed at 0-2%), which is the point of
+# the comparison, not a bug in the setup.
+#
+# IvI differences from the Snellius job:
+#   * env restored 2026-11-21 from staffonedrive per REBUILD.md's AlmaLinux
+#     recipe; lives on /ivi (permanent), never /scratch.
+#   * Vulkan userspace is absent from the node image, so the ICD comes from an
+#     extracted driver .run (610.43.02, matching the nodes) plus loader 1.4.357.
+#     Loader dir MUST precede the driver dir on LD_LIBRARY_PATH.
+#   * sapien's oidn_library is under lib/, not lib64/ as on Snellius.
+#   * --array=0-11%8: ceesusers caps me at 8 concurrent GPUs.
+#
+# Run jobs/ivi_maniskill_verify.job FIRST -- it proves SAPIEN renders here.
+#
+# Submit from robometer-policy-learning/:
+#   sbatch jobs/ivi_maniskill_sac_mix.job
+#   sbatch --export=ALL,STEPS=300000 jobs/ivi_maniskill_sac_mix.job
+
+set -uo pipefail
+cd "$SLURM_SUBMIT_DIR"
+export USER="${USER:-$(whoami)}"
+mkdir -p logs
+
+# ---- array -> (arm, seed) --------------------------------------------------
+IDX="${SLURM_ARRAY_TASK_ID:-0}"
+ARMS=(lam01 lam03 lam07 lam10)
+LAMS=(0.1 0.3 0.7 1.0)
+SEEDS=(1 2 3)
+SEED_I=$(( IDX % 3 ))
+ARM_I=$(( IDX / 3 ))
+ARM="${ARMS[$ARM_I]}"
+LAM="${LAMS[$ARM_I]}"
+SEED="${SEEDS[$SEED_I]}"
+
+TASK="${TASK:-PullCube-v1}"
+STEPS="${STEPS:-300000}"
+ARM_TAG="mix_${ARM}"
+
+# ---- reward model: the mix arm's step-4000 checkpoint ----------------------
+# These hold UNMERGED PEFT weights (252 lora_B tensors + 3 heads inside a
+# 1236-tensor state dict), so they need the _restore_unmerged_peft_checkpoint
+# path in Robometer/utils/save.py (branch inference-pipeline). A silently
+# dropped adapter does not crash -- it returns noise.
+CKPT_ROOT=/ivi/zfs/s0/original_homes/pkarage/roboref_rebuttal/checkpoints/mix_lora
+REWARD_CKPT="${REWARD_CKPT:-$CKPT_ROOT/robometer_mix_lora_ho_${ARM}/checkpoint-4000}"
+
+# ---- environment ----------------------------------------------------------
+ENV_PREFIX=/ivi/zfs/s0/original_homes/pkarage/envs/maniskill_rl
+VK_ROOT=/ivi/zfs/s0/original_homes/pkarage
+SCRATCH_ROOT=/ivi/zfs/s0/original_homes/pkarage
+PYTHON="$ENV_PREFIX/bin/python"
+[[ -x "$PYTHON" ]] || { echo "[fatal] no python at $PYTHON"; exit 1; }
+export PATH="$ENV_PREFIX/bin:$PATH"
+
+OIDN_DIR=$(find "$ENV_PREFIX" -maxdepth 5 -type d -name oidn_library 2>/dev/null | head -1)
+export LD_LIBRARY_PATH="$VK_ROOT/vulkan_loader/extracted/lib:$VK_ROOT/nvidia_driver/extracted${OIDN_DIR:+:$OIDN_DIR}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export VK_ICD_FILENAMES="$VK_ROOT/nvidia_driver/nvidia_icd_abs.json"
+
+export MUJOCO_GL=egl PYOPENGL_PLATFORM=egl SAPIEN_HEADLESS=1
+export MS_ASSET_DIR="${MS_ASSET_DIR:-$SCRATCH_ROOT/maniskill_assets}"
+export HF_HOME="${HF_HOME:-/home/pkarage/.cache/huggingface}"
+export TORCH_HOME="${TORCH_HOME:-$SCRATCH_ROOT/torch_cache}"
+export SAPIEN_CACHE_DIR="${SAPIEN_CACHE_DIR:-$SCRATCH_ROOT/sapien_cache}"
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+export PYTHONSAFEPATH=1          # REBUILD.md trap 3: in-repo robometer/ must not shadow the fork
+export ROBOMETER_DISABLE_UNSLOTH=1   # every RoboRef ckpt bakes use_unsloth:true; inference wants from_pretrained
+
+NODE_DRIVER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)
+if [[ "$NODE_DRIVER" != "610.43.02" ]]; then
+    echo "[fatal] node driver $NODE_DRIVER != 610.43.02; the extracted Vulkan ICD"
+    echo "        must match the kernel module. Re-extract for $NODE_DRIVER or"
+    echo "        exclude this node. ($(hostname))"
+    exit 78
+fi
+
+# ---- wandb ----------------------------------------------------------------
+export WANDB_PROJECT="${WANDB_PROJECT:-roboref_maniskill_mix}"
+export WANDB_ENTITY="${WANDB_ENTITY:-nlp-squad}"
+export WANDB_DISABLE_ARTIFACTS=true
+if [[ -z "${WANDB_API_KEY:-}" && -r "$HOME/.wandb_key" ]]; then
+    WANDB_API_KEY="$(tr -d '[:space:]' < "$HOME/.wandb_key")"; export WANDB_API_KEY
+fi
+# wandb here is 0.28.2, so the 0.16.4 ServerSettings shim is NOT needed.
+export WANDB_MODE="${WANDB_MODE:-online}"
+
+# ---- the dense arm --------------------------------------------------------
+ARM_ARGS=(
+  "reward_model=robometer"
+  "reward_model.model_path=$REWARD_CKPT"
+  "reward_model.add_estimated_reward=false"   # the model REPLACES the env reward
+  "reward_model.use_success_detection=false"  # no VLM termination
+  "env.use_gt_rewards=false"
+  "env.env_kwargs.reward_mode=sparse"
+)
+
+# ---- the canonical recipe (REBUILD.md "What actually works") ---------------
+RECIPE_ARGS=()
+if [[ "${RECIPE:-1}" == "1" ]]; then
+    RECIPE_ARGS=(
+      "online_algorithm.gamma=0.95"            # NOT the yaml's 0.99, NOT the older 0.8
+      "online_algorithm.tau=0.01"
+      "online_algorithm.batch_size=1024"
+      "online_algorithm.learning_starts=4000"
+      "env.terminate_on_success=false"         # no GT leak through `done`
+      "env.reward_shift=0.0"
+      "training.num_envs=4"
+    )
+fi
+
+read -r -a EXTRA_ARR <<< "${EXTRA_ARGS:-}"
+
+RESUME_ARGS=()
+if [[ -n "${RESUME_FROM:-}" ]]; then
+    [[ -f "$RESUME_FROM/actor.pt" ]] || { echo "[fatal] no actor.pt in $RESUME_FROM"; exit 5; }
+    RESUME_ARGS=("training.load_dir=$RESUME_FROM")
+    echo "RESUMING from $RESUME_FROM (STEPS=$STEPS is the REMAINING budget)"
+fi
+
+RUN_DIR="${RUN_DIR:-$SCRATCH_ROOT/roboref_runs/ms_${TASK}_${ARM_TAG}_dense_s${SEED}_j${SLURM_ARRAY_JOB_ID:-local}_${SLURM_ARRAY_TASK_ID:-0}}"
+mkdir -p "$RUN_DIR"
+export RPL_EPISODE_LOG="$RUN_DIR"          # per-episode instrumentation -> episodes.jsonl
+
+echo "==================== launch (IvI, mix arms) ===================="
+echo "JOB         : ${SLURM_JOB_ID:-<none>} array ${SLURM_ARRAY_TASK_ID:-?} on $(hostname)"
+echo "driver      : $NODE_DRIVER"
+echo "TASK        : $TASK"
+echo "ARM         : $ARM  (lambda=$LAM)   SEED: $SEED"
+echo "REWARD_CKPT : $REWARD_CKPT"
+echo "STEPS       : $STEPS"
+echo "RECIPE      : ${RECIPE:-1}  -> ${RECIPE_ARGS[*]:-<off>}"
+echo "RUN_DIR     : $RUN_DIR"
+echo "WANDB_MODE  : $WANDB_MODE  project=$WANDB_PROJECT"
+echo "================================================================"
+
+for f in "$REWARD_CKPT/model.safetensors.index.json" "$REWARD_CKPT/../config.yaml"; do
+    [[ -r "$f" ]] || { echo "[fatal] missing/unreadable: $f"; exit 79; }
+done
+
+echo "[preflight] training stack imports"
+"$PYTHON" -c "
+from robometer_policy_learning.runners.serial_runner import SerialRunner
+from robometer_policy_learning.buffers.robometer_replay_buffer import RobometerReplayBuffer
+from robometer_policy_learning.algorithms.sac import SAC
+from robometer_policy_learning.utils.training_utils import setup_training, create_buffer
+import robometer
+assert robometer.__file__.startswith('/home/pkarage/RoboRef/Robometer'), robometer.__file__
+print('training stack imports OK; robometer =', robometer.__file__)
+" || { echo "[fatal] training stack failed to import"; exit 3; }
+
+echo "[preflight] environment + render"
+"$PYTHON" scripts/verify_maniskill_env.py --task "$TASK" || {
+    echo "[fatal] environment verification failed"; exit 3; }
+
+"$PYTHON" scripts/train.py \
+  --config-path=../robometer_policy_learning/configs \
+  --config-name=maniskill_online_rl \
+  "env.env_name=maniskill/$TASK" \
+  algorithm@online_algorithm=sac \
+  alg.online_alg_name=sac \
+  training.num_rollouts="$STEPS" \
+  training.seed="$SEED" \
+  logging.wandb_name="ms_${TASK}_${ARM_TAG}_dense_s${SEED}" \
+  logging.wandb_entity="$WANDB_ENTITY" \
+  "hydra.run.dir=$RUN_DIR" \
+  "logging.wandb_log_dir_base=$RUN_DIR/wandb" \
+  "${ARM_ARGS[@]}" \
+  "${RECIPE_ARGS[@]}" \
+  "${RESUME_ARGS[@]}" \
+  "${EXTRA_ARR[@]}"
+RC=$?
+echo "EXIT=$RC  arm=$ARM lambda=$LAM task=$TASK seed=$SEED steps=$STEPS"
+exit $RC

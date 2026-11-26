@@ -163,6 +163,50 @@ mkdir -p extracted
 zstd -dc pkg-libvulkan-loader-1.4.357.0-h5279c79_0.tar.zst | tar -xf - -C extracted
 ```
 
+### Step 2 must cover EVERY .so, not just `*.so.610.43.02` (added 2026-11-21)
+
+The loop above as originally written globs `*.so.610.43.02`, which silently skips
+the libraries the driver ships under their own version suffix -- above all
+`libGL.so.1.7.0`. Nothing in SAPIEN needs `libGL`, so the gap hides until
+something else imports **cv2**, which `mani_skill.envs.tasks.digital_twins`
+imports at package load:
+
+```
+ImportError: libGL.so.1: cannot open shared object file: No such file or directory
+```
+
+The login node has `/usr/lib64/libGL.so.1`, the compute nodes do not, so this
+passes every login-node check and fails inside the job. Widen the loop:
+
+```bash
+cd $NVIDIA_DIR/extracted
+for f in *.so *.so.*; do
+  [ -f "$f" ] || continue
+  soname=$(readelf -d "$f" 2>/dev/null | grep SONAME | grep -oP '\[\K[^\]]+' || true)
+  [ -n "$soname" ] && [ "$soname" != "$f" ] && [ ! -e "$soname" ] && ln -sf "$f" "$soname"
+done
+```
+
+Note `|| true`: with `set -e`, a library that has no SONAME aborts the whole
+loop at the first one. On driver 610.43.02 this adds 9 links beyond the
+`*.so.610.43.02` set, including `libGL.so.1`, `libGLESv{1_CM,2}.so.*` and
+`libOpenCL.so.1`.
+
+### Rebuilding on IvI (AlmaLinux 8.10, A5000) -- 2026-11-21
+
+Same recipe as hipster, same driver (610.43.02), with two differences:
+
+* `lib64` is a **symlink to `lib`** in this venv, so sapien's `oidn_library`
+  resolves under `lib/python3.12/site-packages/sapien/`, not `lib64/...` as
+  `snellius_maniskill_sac.job` hardcodes. Glob for it instead:
+  `find "$ENV_PREFIX" -maxdepth 5 -type d -name oidn_library | head -1`.
+* `/usr/bin/python3.12` here is 3.12.15 (the tar was built on 3.12.4). Within
+  3.12 the site-packages path and C ABI match, so the wheels load unmodified.
+
+Jobs: `jobs/ivi_maniskill_verify.job` (render gate),
+`jobs/ivi_rm_preflight.job` (loader + `lora_B`-nonzero gate for LoRA
+checkpoints), `jobs/ivi_maniskill_sac_mix.job` (the run).
+
 Verify on a GPU node (never the login node -- there is no GPU there):
 
 ```bash

@@ -1,0 +1,103 @@
+#!/bin/bash
+#SBATCH --job-name=ms_demo2v
+#SBATCH --output=logs/ms_demo2v_%j.out
+#SBATCH --error=logs/ms_demo2v_%j.err
+#SBATCH --time=01:30:00
+#SBATCH --account=ceesusers
+#SBATCH --partition=cees
+#SBATCH --constraint=A5000
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --gpus-per-node=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=40G   # measured job-cgroup peak 10-20 G across 36 cells
+#SBATCH --no-requeue
+#
+# POSITIVE CONTROL for the two-view occlusion fix.
+#
+# multiview_reduce=min pays reward only where EVERY view supports it, and success
+# needs a majority of views (= both, for two). That is only safe if view2 fires on
+# a REAL success. If base_camera scores a genuine success low, min() suppresses
+# true reward and the "fix" breaks learning instead of fixing it.
+#
+# This replays ManiSkill's official PullCube demos, keeps only episodes OUR env
+# confirms as solved (the demos were generated on physx_cuda, we run physx_cpu, so
+# the recorded label is not trusted), and scores both cameras through the exact
+# call the replay buffer uses.
+#
+# Submit from robometer-policy-learning/:
+#   sbatch jobs/ivi_maniskill_demo_twoview.job
+
+set -uo pipefail
+cd "$SLURM_SUBMIT_DIR"
+export USER="${USER:-$(whoami)}"
+mkdir -p logs
+
+ARM="${ARM:-lam03}"
+TASK="${TASK:-PullCube-v1}"
+SECOND_VIEW="${SECOND_VIEW:-base_camera}"
+NEPS="${NEPS:-6}"
+# open-loop replay of physx_cuda demos diverges on physx_cpu: measured 3/25 reach
+# success in our env, so oversample tries to get enough VERIFIED successes.
+MAXTRIES="${MAXTRIES:-25}"
+THRESH="${THRESH:-0.75}"
+CONTROL_MODE="${CONTROL_MODE:-pd_ee_delta_pos}"
+
+CKPT_ROOT=/ivi/zfs/s0/original_homes/pkarage/roboref_rebuttal/checkpoints/mix_lora
+REWARD_CKPT="${REWARD_CKPT:-$CKPT_ROOT/robometer_mix_lora_ho_${ARM}/checkpoint-4000}"
+
+ENV_PREFIX=/ivi/zfs/s0/original_homes/pkarage/envs/maniskill_rl
+VK_ROOT=/ivi/zfs/s0/original_homes/pkarage
+SCRATCH_ROOT=/ivi/zfs/s0/original_homes/pkarage
+DEMO_DIR="${DEMO_DIR:-$SCRATCH_ROOT/maniskill_assets/demos/$TASK/rl}"
+PYTHON="$ENV_PREFIX/bin/python"
+[[ -x "$PYTHON" ]] || { echo "[fatal] no python at $PYTHON"; exit 1; }
+[[ -d "$DEMO_DIR" ]] || { echo "[fatal] no demo dir $DEMO_DIR"; exit 2; }
+export PATH="$ENV_PREFIX/bin:$PATH"
+
+OIDN_DIR=$(find "$ENV_PREFIX" -maxdepth 5 -type d -name oidn_library 2>/dev/null | head -1)
+export LD_LIBRARY_PATH="$VK_ROOT/vulkan_loader/extracted/lib:$VK_ROOT/nvidia_driver/extracted${OIDN_DIR:+:$OIDN_DIR}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export VK_ICD_FILENAMES="$VK_ROOT/nvidia_driver/nvidia_icd_abs.json"
+export MUJOCO_GL=egl PYOPENGL_PLATFORM=egl SAPIEN_HEADLESS=1
+export MS_ASSET_DIR="${MS_ASSET_DIR:-$SCRATCH_ROOT/maniskill_assets}"
+export HF_HOME="${HF_HOME:-/home/pkarage/.cache/huggingface}"
+export TORCH_HOME="${TORCH_HOME:-$SCRATCH_ROOT/torch_cache}"
+export SAPIEN_CACHE_DIR="${SAPIEN_CACHE_DIR:-$SCRATCH_ROOT/sapien_cache}"
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+export PYTHONSAFEPATH=1
+export ROBOMETER_DISABLE_UNSLOTH=1
+export WANDB_MODE=disabled
+export WANDB_CACHE_DIR="${WANDB_CACHE_DIR:-$SCRATCH_ROOT/wandb_cache}"
+export WANDB_ARTIFACT_DIR="${WANDB_ARTIFACT_DIR:-$WANDB_CACHE_DIR/artifacts}"
+
+NODE_DRIVER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)
+if [[ "$NODE_DRIVER" != "610.43.02" ]]; then
+    echo "[fatal] node driver $NODE_DRIVER != 610.43.02; the extracted Vulkan ICD must match."
+    exit 78
+fi
+
+OUT_DIR="$SCRATCH_ROOT/roboref_runs/demo2v_${TASK}_${ARM}_j${SLURM_JOB_ID:-local}"
+mkdir -p "$OUT_DIR"
+
+echo "============ two-view DEMO positive control ============"
+echo "node        : $(hostname)  driver $NODE_DRIVER"
+echo "TASK / ARM  : $TASK / $ARM"
+echo "REWARD_CKPT : $REWARD_CKPT"
+echo "DEMO_DIR    : $DEMO_DIR  ($CONTROL_MODE)"
+echo "SECOND_VIEW : $SECOND_VIEW   episodes=$NEPS (max_tries=$MAXTRIES)  fire threshold=$THRESH"
+echo "OUT_DIR     : $OUT_DIR"
+echo "========================================================"
+
+"$PYTHON" jobs/demo_twoview_check.py \
+  --demo-dir "$DEMO_DIR" \
+  --control-mode "$CONTROL_MODE" \
+  --reward-ckpt "$REWARD_CKPT" \
+  --second-view "$SECOND_VIEW" \
+  --task "$TASK" \
+  --n-episodes "$NEPS" \
+  --max-tries "$MAXTRIES" \
+  --threshold "$THRESH" \
+  --out-json "$OUT_DIR/per_step_scores.json"
+RC=$?
+echo "EXIT=$RC"
+exit $RC
