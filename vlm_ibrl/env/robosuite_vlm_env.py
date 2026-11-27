@@ -238,6 +238,15 @@ class VLMRobosuite:
             self._rd_cams = os.environ.get(
                 "ROBODOPAMINE_CAMS", "agentview,robot0_eye_in_hand,robot0_eye_in_hand").split(",")
             camera_names = list(dict.fromkeys(list(camera_names) + self._rd_cams))
+        # MULTI-VIEW REWARD (port of robometer-policy-learning's multiview_reduce, see
+        # MULTIVIEW_RL.md). ROBOMETER_REWARD_VIEWS="agentview,robot0_eye_in_hand" scores the
+        # Robometer reward/detection on every listed camera and reduces with
+        # ROBOMETER_MULTIVIEW_REDUCE (min|mean). Unset = old single-view behaviour (vlm_camera).
+        # Reward views are rendered for the reward only; rl_cameras (actor input) are untouched.
+        self.reward_views = [v for v in os.environ.get("ROBOMETER_REWARD_VIEWS", "").split(",") if v] or [vlm_camera]
+        self.multiview_reduce = os.environ.get("ROBOMETER_MULTIVIEW_REDUCE", "min")
+        assert self.multiview_reduce in ("min", "mean"), self.multiview_reduce
+        camera_names = list(dict.fromkeys(list(camera_names) + self.reward_views))
         self.camera_names = camera_names
         self.ctrl_config = load_controller_config(default_controller="OSC_POSE")
         self.ctrl_config["control_delta"] = ctrl_delta
@@ -362,6 +371,11 @@ class VLMRobosuite:
 
         self.vlm.eval()
         self.current_video = []
+        # one growing video per reward view; the vlm_camera entry IS current_video
+        self.view_videos = {v: (self.current_video if v == vlm_camera else []) for v in self.reward_views}
+        self._last_per_view = {}
+        if len(self.reward_views) > 1:
+            print(f"[multiview] reward views={self.reward_views} reduce={self.multiview_reduce}", flush=True)
         self.vid_t = 0
         self.past_len = past_len
         self.vlm_name = vlm
@@ -506,6 +520,9 @@ class VLMRobosuite:
         rl_obs, high_res_images = self._extract_images(obs)
         current_img = tensor_to_pil(high_res_images[self.vlm_camera])
         self.current_video.append(current_img)
+        for v, vid in self.view_videos.items():
+            if vid is not self.current_video:
+                vid.clear(); vid.append(tensor_to_pil(high_res_images[v]))
         self.vid_t = 0
 
         if self.cond_action > 0:
@@ -547,6 +564,9 @@ class VLMRobosuite:
 
             current_img = tensor_to_pil(curr_high_res_images[self.vlm_camera])
             self.current_video.append(current_img)
+            for v, vid in self.view_videos.items():
+                if vid is not self.current_video:
+                    vid.append(tensor_to_pil(curr_high_res_images[v]))
 
             self.vid_t += 1
 
@@ -629,9 +649,19 @@ class VLMRobosuite:
 
     def vlm_reward(self, frames, debug=False):
         if "robometer" in self.vlm_name:
-            out = self.scorer(frames, task=self.task_description, icl_frames=self.icl_frames)
-            self._last_progress = float(out["progress_reward"])
-            self._last_success_prob = float(out["success_prob"])
+            if len(self.reward_views) > 1 and frames is self.current_video:
+                # ICL frames are vlm_camera frames, so they only go with that view.
+                outs = {v: self.scorer(self.view_videos[v], task=self.task_description,
+                                       icl_frames=(self.icl_frames if v == self.vlm_camera else None))
+                        for v in self.reward_views}
+                self._last_per_view = {v: (float(o["progress_reward"]), float(o["success_prob"])) for v, o in outs.items()}
+                red = min if self.multiview_reduce == "min" else (lambda xs: sum(xs) / len(xs))
+                self._last_progress = red([p for p, _ in self._last_per_view.values()])
+                self._last_success_prob = red([sp for _, sp in self._last_per_view.values()])
+            else:
+                out = self.scorer(frames, task=self.task_description, icl_frames=self.icl_frames)
+                self._last_progress = float(out["progress_reward"])
+                self._last_success_prob = float(out["success_prob"])
             mixed = self.robometer_beta * self._last_progress + (1.0 - self.robometer_beta) * self._last_success_prob
             mixed *= self.robometer_reward_scale
             if self.robometer_threshold > 0:

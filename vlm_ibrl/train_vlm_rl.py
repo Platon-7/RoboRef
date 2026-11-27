@@ -373,6 +373,10 @@ class Workspace:
             # offline fair-sep gap.
             self._ep_max_sp = max(getattr(self, "_ep_max_sp", 0.0),
                                   float(getattr(self.train_env, "_last_success_prob", 0.0)))
+            # multi-view: per-view max success_prob (the view disagreement is the occlusion signal)
+            if not hasattr(self, "_ep_max_sp_view"): self._ep_max_sp_view = {}
+            for _v, (_p, _sp) in getattr(self.train_env, "_last_per_view", {}).items():
+                self._ep_max_sp_view[_v] = max(self._ep_max_sp_view.get(_v, 0.0), _sp)
 
             with stopwatch.time("add"):
                 assert isinstance(terminal, bool)
@@ -390,6 +394,9 @@ class Workspace:
                     stat["online/maxsp_gtsucc" if success else "online/maxsp_gtfail"].append(
                         float(getattr(self, "_ep_max_sp", 0.0)))
                     self._ep_max_sp = 0.0
+                    for _v, _m in getattr(self, "_ep_max_sp_view", {}).items():
+                        stat[f"online/maxsp_{_v}_gt{'succ' if success else 'fail'}"].append(float(_m))
+                    self._ep_max_sp_view = {}
 
                     # reset env
                     obs, _ = self.train_env.reset()
